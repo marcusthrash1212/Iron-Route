@@ -104,6 +104,8 @@
   .ready button{border:1.5px solid var(--ink);background:#fff;color:var(--ink);font-family:'Barlow';font-weight:700;
     font-size:13px;padding:12px 2px;cursor:pointer}
   .ready button.on{background:var(--ink);color:#fff}
+  .overlay{position:fixed;inset:0;background:rgba(20,23,28,.6);z-index:50;overflow-y:auto;padding:16px}
+  .overlay .sheet{max-width:520px;margin:24px auto}
   .hide{display:none!important}
 </style>
 </head>
@@ -117,6 +119,7 @@
   </div>
   <div class="tabs" id="tabs"></div>
   <div class="wrap" id="view"></div>
+  <div class="overlay hide" id="overlay"></div>
   <div class="timer" id="timer">
     <div><div class="eyebrow" style="color:#868D95">Rest</div><div class="t" id="tdisp">2:00</div></div>
     <div style="display:flex;gap:8px">
@@ -336,7 +339,8 @@ const FOODS=[
 ];
 
 /* ================= state ================= */
-let P=null,PLAN=null,LOGS={},BODY=[],FUEL={},CUSTOM=[],SESS={},
+/* CUSTOM = saved foods (stored as ir:savedFoods). EXS = custom exercises (Phase 2). */
+let P=null,PLAN=null,LOGS={},BODY=[],FUEL={},CUSTOM=[],SESS={},EXS=[],SETTINGS={},META={},XP=null,
     tab='today',restT=null,restLeft=0,sessT=null,editDay=null,pickFor=null,
     fq='',fres=null,fbusy=false,verdict=null,vbusy=false;
 /* Dates are the phone's local calendar day (v2 used UTC, which flipped to
@@ -358,10 +362,14 @@ const dayName=d=>['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','S
 const fmt=n=>Math.round(n).toLocaleString();
 const esc=s=>String(s).replace(/'/g,"\\'").replace(/"/g,'&quot;');
 
-async function boot(){
+async function load(){
   P=await get('ir:profile',null);PLAN=await get('ir:plan',null);LOGS=await get('ir:logs',{});
-  BODY=await get('ir:body',[]);FUEL=await get('ir:fuel',{});CUSTOM=await get('ir:custom',[]);
-  SESS=await get('ir:sessions',{});
+  BODY=await get('ir:body',[]);FUEL=await get('ir:fuel',{});CUSTOM=await get('ir:savedFoods',[]);
+  SESS=await get('ir:sessions',{});EXS=await get('ir:exercises',[]);SETTINGS=await get('ir:settings',{});
+  META=await get('ir:meta',{});
+}
+async function boot(){
+  await load();
   await closeStale();
   if(!P)tab='intake';else if(!PLAN){PLAN=seedPlan(P.preset||'recomp');await set('ir:plan',PLAN);}
   render();tickSess();setInterval(tickSess,1000);
@@ -486,11 +494,15 @@ function vIntake(){
     <button class="btn" onclick="IR.saveIntake()">Build my plan</button>
   </div>
   <div class="card">
-    <div class="eyebrow">Coming from v1?</div>
-    <p class="muted" style="margin:6px 0 8px">Paste the JSON you copied from the old app and everything comes across.</p>
-    <textarea id="i_imp" rows="3" placeholder='{"profile":...}'></textarea>
-    <button class="btn ghost" style="margin-top:9px" onclick="IR.importOld()">Import it</button>
+    <div class="eyebrow">Bringing your data over?</div>
+    <p class="muted" style="margin:6px 0 8px">Pick the file you exported, or paste the data you copied from the old app. Works with v2 and this version.</p>
+    ${importUI('i_imp')}
   </div>`;
+}
+function importUI(id){
+  return `<input type="file" accept=".json,application/json,text/plain" onchange="IR.importFile(this)">
+    <textarea id="${id}" rows="3" placeholder='...or paste it here: {"profile":...}' style="margin-top:8px"></textarea>
+    <button class="btn ghost" style="margin-top:9px" onclick="IR.importText('${id}')">Import pasted data</button>`;
 }
 async function saveIntake(){
   const g=id=>document.getElementById(id).value.trim();
@@ -503,17 +515,139 @@ async function saveIntake(){
   if(!BODY.length){BODY=[{d:todayKey(),wt:p.wt,wa:p.wa}];await set('ir:body',BODY);}
   tab='today';render();
 }
-async function importOld(){
+
+/* ================= export / import ================= */
+/* Everything the app stores. New data types get added here so export and
+   import pick them up automatically. */
+const KEYS={profile:'ir:profile',plan:'ir:plan',logs:'ir:logs',sessions:'ir:sessions',body:'ir:body',
+  fuel:'ir:fuel',savedFoods:'ir:savedFoods',customExercises:'ir:exercises',settings:'ir:settings'};
+const BLANK={profile:null,plan:null,logs:{},sessions:{},body:[],fuel:{},savedFoods:[],customExercises:[],settings:{}};
+/* Built from what's in memory, synchronously: it still captures changes a
+   failed write couldn't store, and keeps the tap's permission to open Share. */
+function currentData(){
+  return{profile:P,plan:PLAN,logs:LOGS,sessions:SESS,body:BODY,fuel:FUEL,
+    savedFoods:CUSTOM,customExercises:EXS,settings:SETTINGS};
+}
+function counts(d){
+  const sets=Object.values(d.logs||{}).reduce((a,day)=>a+Object.values(day||{})
+    .reduce((b,rows)=>b+(Array.isArray(rows)?rows.filter(r=>r&&r.done).length:0),0),0);
+  return[['Sessions',Object.keys(d.sessions||{}).length],['Sets completed',sets],
+    ['Plan days',Object.keys(d.plan||{}).length],['Custom exercises',(d.customExercises||[]).length],
+    ['Food log entries',Object.values(d.fuel||{}).reduce((a,f)=>a+((f&&f.items)||[]).length,0)],
+    ['Saved foods',(d.savedFoods||[]).length],['Body check-ins',(d.body||[]).length]];
+}
+const when=iso=>new Date(iso).toLocaleString([],{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+
+/* One button, three outcomes: Share, then download, then clipboard (with a
+   selectable text box if the clipboard is blocked). */
+function exportAll(){
+  const data=currentData();
+  XP={json:JSON.stringify({format:'iron-route',version:3,exportedAt:new Date().toISOString(),data},null,2),
+    name:`iron-route-${todayKey()}.json`,counts:counts(data),msg:'',text:false};
+  if(canShareFile())return xpShare();
+  if(xpDownload())return;
+  xpCopy();
+}
+function xpFile(){try{return new File([XP.json],XP.name,{type:'application/json'});}catch(e){return null;}}
+function canShareFile(){
+  const f=xpFile();
+  try{return !!(f&&navigator.canShare&&navigator.canShare({files:[f]}));}catch(e){return false;}
+}
+async function xpShare(){
+  try{await navigator.share({files:[xpFile()],title:'Iron Route data'});await exportDone('Shared. Check it landed where you sent it.');}
+  catch(e){
+    if(e&&e.name==='AbortError'){XP.msg='Share cancelled. Nothing was sent. Pick another way below.';drawXP();}
+    else if(!xpDownload())xpCopy();
+  }
+}
+function xpDownload(){
   try{
-    const d=JSON.parse(document.getElementById('i_imp').value);
-    if(d.profile){P=d.profile;P.preset=P.preset||'recomp';P.t=computeTargets(P);await set('ir:profile',P);}
-    if(d.logs){LOGS=d.logs;await set('ir:logs',LOGS);}
-    if(d.body&&d.body.length){BODY=d.body;await set('ir:body',BODY);}
-    if(d.fuel){FUEL=d.fuel;await set('ir:fuel',FUEL);}
-    if(d.custom){CUSTOM=d.custom;await set('ir:custom',CUSTOM);}
-    PLAN=seedPlan(P.preset);await set('ir:plan',PLAN);
-    tab='today';render();
-  }catch(e){alert('That did not parse as JSON. Paste the whole thing including the braces.');}
+    const url=URL.createObjectURL(new Blob([XP.json],{type:'application/json'}));
+    const a=document.createElement('a');a.href=url;a.download=XP.name;
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),6e4);
+    exportDone(`Downloaded ${XP.name}. It's in your Downloads folder.`);return true;
+  }catch(e){return false;}
+}
+async function xpCopy(){
+  try{
+    if(!navigator.clipboard)throw new Error('No clipboard');
+    await navigator.clipboard.writeText(XP.json);
+    await exportDone('Copied. Paste it somewhere safe: Notes, Drive, or a text to yourself.');
+  }catch(e){
+    XP.text=true;XP.msg="Couldn't reach the clipboard. Press and hold in the box below, tap Select all, then Copy.";drawXP();
+  }
+}
+function xpText(){XP.text=true;drawXP();}
+function xpClose(){XP=null;drawXP();render();}
+async function exportDone(msg){
+  META.lastExport=new Date().toISOString();await set('ir:meta',META);
+  XP.msg=msg;drawXP();
+}
+function drawXP(){
+  const el=document.getElementById('overlay');
+  if(!XP){el.classList.add('hide');el.innerHTML='';return;}
+  el.classList.remove('hide');
+  el.innerHTML=`<div class="card sheet" role="dialog" aria-label="Copy all my data">
+    <div class="eyebrow">Copy all my data</div>
+    ${XP.msg?`<p style="font-weight:700;font-size:15px;margin:6px 0 10px">${XP.msg}</p>`:''}
+    ${XP.counts.map(c=>`<div class="stat"><span>${c[0]}</span><b>${c[1]}</b></div>`).join('')}
+    <div class="stat"><span>Profile and settings</span><b>Included</b></div>
+    <div class="stat"><span>Last export</span><b>${META.lastExport?when(META.lastExport):'Never'}</b></div>
+    <div class="eyebrow" style="margin-top:14px">Send it another way</div>
+    <div class="row3" style="margin-top:6px">
+      <button class="btn sm" onclick="IR.xpShare()" ${canShareFile()?'':'disabled'}>Share</button>
+      <button class="btn sm" onclick="IR.xpDownload()">Download</button>
+      <button class="btn sm" onclick="IR.xpCopy()">Copy</button></div>
+    ${XP.text?`<textarea id="xp_txt" readonly rows="8" style="margin-top:10px;font-family:'JetBrains Mono',monospace;font-size:12px"></textarea>`
+      :`<button class="btn ghost sm" style="margin-top:10px" onclick="IR.xpText()">Show the raw data</button>`}
+    <button class="btn" style="margin-top:12px" onclick="IR.xpClose()">Done</button>
+  </div>`;
+  const t=document.getElementById('xp_txt');
+  if(t){t.value=XP.json;t.focus();t.select();}
+}
+
+/* Import accepts this version's export and the v2 prototype's export. */
+function parseImport(text){
+  let o;
+  try{o=JSON.parse(String(text).trim());}
+  catch(e){throw new Error("That isn't readable data. Make sure you copied all of it, from the first { to the last }.");}
+  let d;
+  if(o&&o.format==='iron-route'&&o.data&&typeof o.data==='object')d=o.data;
+  else if(o&&typeof o==='object'&&(o.profile||o.logs))d={profile:o.profile,plan:o.plan,logs:o.logs,sessions:o.sessions,
+    body:o.body,fuel:o.fuel,savedFoods:o.custom};
+  else throw new Error("That doesn't look like an Iron Route export.");
+  const out={};
+  Object.keys(KEYS).forEach(n=>{
+    const v=d[n],b=BLANK[n];
+    const ok=v!=null&&(b===null?typeof v==='object':Array.isArray(b)?Array.isArray(v):typeof v==='object'&&!Array.isArray(v));
+    out[n]=ok?v:(b&&typeof b==='object'?JSON.parse(JSON.stringify(b)):b);
+  });
+  if(out.profile){
+    if(!PRESETS[out.profile.preset])out.profile.preset='recomp';
+    if(!out.profile.start)out.profile.start=todayKey();
+    out.profile.t=computeTargets(out.profile);
+    if(!out.plan)out.plan=seedPlan(out.profile.preset);
+  }
+  return{v2:!(o.format==='iron-route'),data:out};
+}
+async function importText(id){await importData(document.getElementById(id).value);}
+function importFile(input){
+  const f=input.files&&input.files[0];if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{input.value='';importData(r.result);};
+  r.onerror=()=>{input.value='';alert("Couldn't open that file. Try again, or paste the data instead.");};
+  r.readAsText(f);
+}
+async function importData(text){
+  let r;
+  try{r=parseImport(text);}catch(e){alert(e.message);return;}
+  const list=c=>c.map(x=>`  ${x[0]}: ${x[1]}`).join('\n');
+  if(P&&!confirm(`Replace everything on this phone with this ${r.v2?'v2 ':''}backup?\n\nComing in:\n${list(counts(r.data))}\n\nOn this phone now (will be replaced):\n${list(counts(currentData()))}`))return;
+  for(const n of Object.keys(KEYS))await set(KEYS[n],r.data[n]);
+  await load();await closeStale();
+  if(Object.keys(failed).length){render();return;}
+  tab=P?'today':'intake';render();window.scrollTo(0,0);
+  alert(`Imported.\n\n${list(counts(currentData()))}`);
 }
 
 /* ================= progression ================= */
@@ -904,16 +1038,16 @@ async function newFood(save){
   const item={n,k:kc||0,p:pr||0};
   const k=todayKey();FUEL[k]=FUEL[k]||{items:[]};FUEL[k].items.push(item);
   await set('ir:fuel',FUEL);
-  if(save){CUSTOM.push(item);await set('ir:custom',CUSTOM);}
+  if(save){CUSTOM.push(item);await set('ir:savedFoods',CUSTOM);}
   render();
 }
-async function delUsual(i){CUSTOM.splice(i,1);await set('ir:custom',CUSTOM);render();}
+async function delUsual(i){CUSTOM.splice(i,1);await set('ir:savedFoods',CUSTOM);render();}
 async function logResult(save){
   const k=+document.getElementById('r_k').value,p=+document.getElementById('r_p').value;
   const item={n:fres.n,k,p};
   const key=todayKey();FUEL[key]=FUEL[key]||{items:[]};FUEL[key].items.push(item);
   await set('ir:fuel',FUEL);
-  if(save){CUSTOM.push(item);await set('ir:custom',CUSTOM);}
+  if(save){CUSTOM.push(item);await set('ir:savedFoods',CUSTOM);}
   fq='';fres=null;render();
 }
 
@@ -1019,8 +1153,12 @@ function vProgress(){
       <div class="stat"><span>Daily protein</span><b>${P.t.prot} g</b></div>
       <div class="stat"><span>Maintenance estimate</span><b>${fmt(P.t.tdee)}</b></div></div>
     <div class="note">${PRESETS[P.preset].truth}</div></div>
-  <div class="card"><button class="btn ghost" onclick="IR.exportAll()">Copy all my data</button>
-    <p class="muted" style="margin-top:8px;font-size:12px">Do this weekly and paste it somewhere safe.</p></div>`;
+  <div class="card"><div class="eyebrow">Your data</div><h2>Back it up weekly</h2>
+    <div class="stat" style="margin-top:8px"><span>Last export</span><b>${META.lastExport?when(META.lastExport):'Never'}</b></div>
+    <div class="stat"><span>Storage</span><b>${persisted===true?'Protected':persisted===false?'Not protected':'Unknown'}</b></div>
+    ${persisted===false?`<p class="muted" style="margin-top:6px;font-size:12.5px">Android may clear unprotected app data when space runs low. Add Iron Route to your home screen to protect it, and export weekly either way.</p>`:''}
+    <button class="btn" style="margin-top:12px" onclick="IR.exportAll()">Copy all my data</button>
+    <div style="margin-top:16px"><label>Restore a backup (replaces what's on this phone)</label>${importUI('p_imp')}</div></div>`;
 }
 function chart(title,vals,goal){
   if(vals.length<2)return `<div class="card"><div class="eyebrow">${title}</div>
@@ -1045,13 +1183,9 @@ async function saveBody(){
   BODY.push({d:todayKey(),wt:wt||last.wt,wa:wa||last.wa});
   await set('ir:body',BODY);render();
 }
-function exportAll(){
-  const blob=JSON.stringify({profile:P,plan:PLAN,logs:LOGS,body:BODY,fuel:FUEL,custom:CUSTOM,sessions:SESS},null,2);
-  navigator.clipboard?.writeText(blob);alert('Copied. Paste it somewhere safe.');
-}
 
 boot();
-return{go,saveIntake,importOld,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
+return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpClose,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
  fSearch,logFood,delFood,newFood,delUsual,logResult,aiLookup,photoLookup,readDay,saveBody,exportAll};
 })();
