@@ -114,6 +114,10 @@
   .urow small{color:var(--ink-soft);font-family:'JetBrains Mono';font-size:11px}
   .urow .plus{border:1.5px solid var(--ink);background:#fff;width:34px;height:34px;display:flex;align-items:center;
     justify-content:center;font-size:18px;font-weight:700;flex:none}
+  .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .mchk{display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink);
+    font-weight:500;border:1.5px solid var(--line);background:#fff;padding:9px 10px;margin:0;cursor:pointer}
+  .mchk input{width:auto;margin:0;flex:none}
   .add.saved{border-color:var(--p-yellow);color:#8a6a00;cursor:default}
   .toast{position:fixed;left:12px;right:12px;bottom:84px;z-index:60;background:var(--ink);color:#fff;padding:10px 12px;
     display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:600;font-size:14px;max-width:560px;margin:0 auto}
@@ -274,8 +278,10 @@ const LIB=[
  {n:'Thoracic rotations',m:[],rest:0,cat:'Mobility',c:['All fours, hand behind the head, open to the ceiling.']},
  {n:'90/90 hip rotations',m:[],rest:0,cat:'Mobility',c:['Sit tall, rotate both knees side to side slowly.']}
 ];
-const findEx=n=>LIB.find(x=>x.n===n)||{n,m:[],rest:60,c:null};
+/* Custom exercises (EXS) sit beside the built-in library everywhere, heatmap included. */
+const findEx=n=>LIB.find(x=>x.n===n)||EXS.find(x=>x.n===n)||{n,m:[],rest:60,c:null};
 const CATS=[...new Set(LIB.map(x=>x.cat))];
+const EQUIP=['Machine','Cable','Barbell','Dumbbell','Bodyweight','Cardio machine','Other'];
 
 /* ================= body-type presets ================= */
 const PRESETS={
@@ -378,7 +384,8 @@ const SEED_USUALS=[
 
 /* ================= state ================= */
 /* CUSTOM = saved foods (stored as ir:savedFoods). EXS = custom exercises (Phase 2). */
-let P=null,PLAN=null,LOGS={},BODY=[],FUEL={},CUSTOM=[],SESS={},EXS=[],SETTINGS={},META={},XP=null,
+/* XTRA = exercises added to one day's session only, keyed by date. */
+let P=null,PLAN=null,LOGS={},BODY=[],FUEL={},CUSTOM=[],SESS={},EXS=[],XTRA={},SETTINGS={},META={},XP=null,
     tab='today',restT=null,restLeft=0,sessT=null,editDay=null,pickFor=null,
     fq='',fres=null,fbusy=false,verdict=null,vbusy=false;
 /* Dates are the phone's local calendar day (v2 used UTC, which flipped to
@@ -404,7 +411,8 @@ const h=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"
 async function load(){
   P=await get('ir:profile',null);PLAN=await get('ir:plan',null);LOGS=await get('ir:logs',{});
   BODY=await get('ir:body',[]);FUEL=await get('ir:fuel',{});CUSTOM=await get('ir:savedFoods',[]);
-  SESS=await get('ir:sessions',{});EXS=await get('ir:exercises',[]);SETTINGS=await get('ir:settings',{});
+  SESS=await get('ir:sessions',{});EXS=await get('ir:exercises',[]);XTRA=await get('ir:extras',{});
+  SETTINGS=await get('ir:settings',{});
   META=await get('ir:meta',{});
 }
 /* Brings stored data up to the current shape. Runs after every load and import. */
@@ -507,7 +515,7 @@ function render(){
     `<button class="${tab===t[0]?'on':''}" onclick="IR.go('${t[0]}')">${t[1]}</button>`).join(''):'';
   document.getElementById('topsub').textContent=P?`${P.name||'Lifter'} · ${PRESETS[P.preset].label}`:'Set up your plan';
   document.getElementById('view').innerHTML=
-    ({intake:vIntake,today:vToday,plan:vPlan,edit:vEdit,pick:vPick,body:vBody,fuel:vFuel,progress:vProgress}[tab])();
+    ({intake:vIntake,today:vToday,plan:vPlan,edit:vEdit,pick:vPick,newex:vNewEx,body:vBody,fuel:vFuel,progress:vProgress}[tab])();
   tickSess();
 }
 function go(t){tab=t;render();window.scrollTo(0,0);}
@@ -564,13 +572,13 @@ async function saveIntake(){
 /* Everything the app stores. New data types get added here so export and
    import pick them up automatically. */
 const KEYS={profile:'ir:profile',plan:'ir:plan',logs:'ir:logs',sessions:'ir:sessions',body:'ir:body',
-  fuel:'ir:fuel',savedFoods:'ir:savedFoods',customExercises:'ir:exercises',settings:'ir:settings'};
-const BLANK={profile:null,plan:null,logs:{},sessions:{},body:[],fuel:{},savedFoods:[],customExercises:[],settings:{}};
+  fuel:'ir:fuel',savedFoods:'ir:savedFoods',customExercises:'ir:exercises',sessionExtras:'ir:extras',settings:'ir:settings'};
+const BLANK={profile:null,plan:null,logs:{},sessions:{},body:[],fuel:{},savedFoods:[],customExercises:[],sessionExtras:{},settings:{}};
 /* Built from what's in memory, synchronously: it still captures changes a
    failed write couldn't store, and keeps the tap's permission to open Share. */
 function currentData(){
   return{profile:P,plan:PLAN,logs:LOGS,sessions:SESS,body:BODY,fuel:FUEL,
-    savedFoods:CUSTOM,customExercises:EXS,settings:SETTINGS};
+    savedFoods:CUSTOM,customExercises:EXS,sessionExtras:XTRA,settings:SETTINGS};
 }
 function counts(d){
   const sets=Object.values(d.logs||{}).reduce((a,day)=>a+Object.values(day||{})
@@ -720,11 +728,12 @@ function suggest(e){
 function vToday(){
   const d=curDow(),day=PLAN[d],k=curKey(),log=LOGS[k]||{},f=FUEL[todayKey()]||{items:[]},s=sessRec(),b=blockInfo();
   const pTot=f.items.reduce((a,x)=>a+x.p,0),pPct=Math.min(100,Math.round(pTot/P.t.prot*100));
-  const totalSets=day.ex.reduce((a,e)=>a+e.s,0);
+  const list=sessEx(k,d),nPlan=day.ex.length;
+  const totalSets=list.reduce((a,e)=>a+e.s,0);
   const doneSets=Object.values(log).reduce((a,r)=>a+r.filter(x=>x.done).length,0);
   const volume=Object.values(log).reduce((a,r)=>a+r.filter(x=>x.done).reduce((q,x)=>q+(+x.w||0)*(+x.r||0),0),0);
 
-  let ex=day.ex.map((e,i)=>{
+  let ex=list.map((e,i)=>{
     const lib=findEx(e.n);
     const rows=log[e.n]||Array.from({length:e.s},()=>({w:'',r:'',done:false}));
     const sg=suggest(e),q=encodeURIComponent(e.n+' proper form');
@@ -735,10 +744,12 @@ function vToday(){
       <input class="${st.done?'done':''}" inputmode="numeric" placeholder="reps" value="${st.r}" oninput="IR.setVal('${esc(e.n)}',${j},'r',this.value)">
       <button class="tick ${st.done?'on':''}" onclick="IR.toggle('${esc(e.n)}',${j},${e.rest||0})" aria-label="Complete set ${j+1}">✓</button>
     </div>`).join('');
-    const prev=day.ex[i-1];
+    const prev=list[i-1],extra=i>=nPlan;
     const grpHead=e.g&&(!prev||prev.g!==e.g)?`<div style="margin-bottom:6px"><span class="pill grp">Superset ${e.g}</span><span class="muted" style="font-size:12px">Alternate these two, rest only after the pair</span></div>`:'';
     return `${grpHead}<div class="ex ${e.g?'grp':''}">
-      <div class="ex-h"><div class="ex-n">${e.n}</div><div class="ex-t num">${e.s} × ${e.r}</div></div>
+      ${extra?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span class="pill grp">Added today</span>
+        ${rows.some(r=>r.done)?'':`<button class="btn ghost sm" style="padding:4px 9px" onclick="IR.rmExtra(${i-nPlan})">Remove</button>`}</div>`:''}
+      <div class="ex-h"><div class="ex-n">${h(e.n)}${lib.custom?' <span class="pill" style="font-size:8.5px;padding:2px 5px">Custom</span>':''}</div><div class="ex-t num">${e.s} × ${h(e.r)}</div></div>
       ${e.tempo?`<div class="tempo">Tempo ${e.tempo} · ${e.tempo.split('-')[0]}s down, ${e.tempo.split('-')[1]}s pause, ${e.tempo.split('-')[2]}s up</div>`:''}
       <div class="target">${sg.txt}</div>
       <div class="sets">${sets}</div>
@@ -771,7 +782,8 @@ function vToday(){
     <div style="margin-top:12px"><label>How did that feel? One tap, or skip it</label>
       <div class="ready">${READY.map(r=>`<button class="${s.ready===r[0]?'on':''}" onclick="IR.setReady('${r[0]}')">${r[1]}</button>`).join('')}</div></div>
     <div class="note">Now go eat. You have ${Math.max(0,P.t.prot-pTot)}g of protein left today.</div></div>`:''}
-  <div class="card">${ex}</div>
+  <div class="card">${ex}
+    <button class="btn ghost" style="margin-top:10px" onclick="IR.pickGo('sess')">Add an exercise</button></div>
   <div class="card">
     <div class="eyebrow">Protein today — the one that decides everything</div>
     <div class="bar" style="margin-top:8px"><span style="width:${pPct}%;background:${pTot>=P.t.prot?'var(--p-green)':'var(--p-yellow)'}"></span>
@@ -786,9 +798,15 @@ function sessBtns(d){
       :`<button class="btn red" onclick="IR.endSess()">Finish workout</button>`}
     <button class="btn ghost" onclick="IR.editDayGo(${d})">Edit today</button>`;
 }
+/* The day's planned exercises plus anything added to this session only. */
+const sessEx=(k,d)=>PLAN[d].ex.concat(XTRA[k]||[]);
+async function rmExtra(i){
+  const k=curKey();(XTRA[k]||[]).splice(i,1);if(XTRA[k]&&!XTRA[k].length)delete XTRA[k];
+  await set('ir:extras',XTRA);render();
+}
 function setRows(k,name){
   LOGS[k]=LOGS[k]||{};
-  const e=PLAN[curDow()].ex.find(x=>x.n===name)||{s:5};
+  const e=sessEx(k,curDow()).find(x=>x.n===name)||{s:5};
   return LOGS[k][name]=LOGS[k][name]||Array.from({length:e.s},()=>({w:'',r:'',done:false}));
 }
 /* Saves on every keystroke. The first number typed creates the session. */
@@ -836,7 +854,7 @@ function vPlan(){
         <button class="btn ghost sm" onclick="IR.editDayGo(${d})">Edit</button></div>
       <h3 style="font-size:16px;margin:8px 0 8px">${p.t}</h3>
       ${p.ex.map(e=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0">
-        <span>${e.g?`<span class="pill grp" style="padding:1px 4px">${e.g}</span>`:''}${e.n}</span>
+        <span>${e.g?`<span class="pill grp" style="padding:1px 4px">${e.g}</span>`:''}${h(e.n)}</span>
         <span class="num muted">${e.s>1?e.s+' × ':''}${e.r}</span></div>`).join('')}
     </div>`;}).join('');
 }
@@ -868,7 +886,7 @@ function vEdit(){
     <div class="eyebrow">Exercises</div>
     ${p.ex.map((e,i)=>`<div style="border-top:1px solid var(--line);padding:10px 0">
       <div class="edrow" style="border:0;padding:0">
-        <div style="font-weight:700;font-size:14.5px">${e.g?`<span class="pill grp" style="padding:1px 5px">${e.g}</span>`:''}${e.n}</div>
+        <div style="font-weight:700;font-size:14.5px">${e.g?`<span class="pill grp" style="padding:1px 5px">${e.g}</span>`:''}${h(e.n)}</div>
         <div class="mini">
           <button onclick="IR.moveEx(${i},-1)" ${i===0?'disabled':''} aria-label="Move up">↑</button>
           <button onclick="IR.moveEx(${i},1)" ${i===p.ex.length-1?'disabled':''} aria-label="Move down">↓</button>
@@ -914,24 +932,87 @@ async function groupEx(i){
   }
   await set('ir:plan',PLAN);render();
 }
-function pickGo(d){pickFor=d;go('pick');}
+/* ---- exercise library: pickFor is a day number (plan) or 'sess' (today's session only) ---- */
+let xq='',xErr='';
+const pickLabel=()=>pickFor==='sess'?"today's session":dayName(pickFor);
+function pickGo(d){pickFor=d;xq='';go('pick');}
+function exRow(x){
+  return `<div class="usual"><div>${h(x.n)}${x.custom?' <span class="pill" style="font-size:8.5px;padding:2px 5px">Custom</span>':''}<br>
+    <small>${x.custom&&x.eq?h(x.eq)+' · ':''}${(x.m||[]).map(m=>M[m]).join(', ')||'—'}</small></div>
+    <button class="add" onclick="IR.addEx('${esc(x.n)}')" aria-label="Add ${h(x.n)}">+</button></div>`;
+}
 function vPick(){
-  return `<div class="card"><div class="eyebrow">Add to ${dayName(pickFor)}</div>
-    <h2>Your gym's exercises</h2>
-    <p class="muted" style="margin-top:4px">Everything here is built from the equipment in your photos.</p></div>`
-  +CATS.map(c=>`<div class="card"><div class="eyebrow">${c}</div>
-    ${LIB.filter(x=>x.cat===c).map(x=>`<div class="usual"><div>${x.n}<br>
-      <small>${(x.m||[]).map(m=>M[m]).join(', ')||'—'}</small></div>
-      <button class="add" onclick="IR.addEx('${esc(x.n)}')" aria-label="Add ${x.n}">+</button></div>`).join('')}
-  </div>`).join('')
-  +`<div class="card"><button class="btn ghost" onclick="IR.backToEdit()">Back to the day</button></div>`;
+  const t=xq.toLowerCase().trim(),hit=x=>!t||x.n.toLowerCase().includes(t)||(x.m||[]).some(m=>M[m].toLowerCase().includes(t));
+  const groups=[['Custom',EXS.filter(hit)]].concat(CATS.map(c=>[c,LIB.filter(x=>x.cat===c&&hit(x))])).filter(g=>g[1].length);
+  return `<div class="card"><div class="eyebrow">Add to ${pickLabel()}</div>
+    <h2>Exercise library</h2>
+    <input id="x_q" value="${h(xq)}" placeholder="Search by name or muscle" oninput="IR.xSearch(this.value)" style="margin-top:8px">
+    <button class="btn" style="margin-top:10px" onclick="IR.newExGo()">Create a custom exercise</button></div>`
+  +(groups.length?groups.map(g=>`<div class="card"><div class="eyebrow">${g[0]}</div>${g[1].map(exRow).join('')}</div>`).join('')
+    :`<div class="card"><p class="muted">Nothing matches "${h(xq)}". Create it as a custom exercise.</p></div>`)
+  +`<div class="card"><button class="btn ghost" onclick="IR.backToEdit()">Back to ${pickFor==='sess'?'today':'the day'}</button></div>`;
+}
+function xSearch(v){
+  xq=v;const pos=document.getElementById('x_q').selectionStart;render();
+  const nb=document.getElementById('x_q');if(nb){nb.focus();nb.setSelectionRange(pos,pos);}
+}
+function planEntry(n){
+  const lib=findEx(n),lo=lib.lo||10,hi=lib.hi||12;
+  return{n,s:3,r:lo===hi?String(lo):`${lo}–${hi}`,lo,hi,rest:lib.rest,tempo:lib.tempo!==undefined?lib.tempo:(lib.rest?'3-0-1':'')};
 }
 async function addEx(n){
-  const lib=findEx(n);
-  PLAN[pickFor].ex.push({n,s:3,r:'10–12',lo:10,hi:12,rest:lib.rest,tempo:lib.rest?'3-0-1':''});
+  if(pickFor==='sess'){
+    const k=curKey();
+    if(sessEx(k,curDow()).some(e=>e.n===n)){toast(`${n} is already in today's session`);return;}
+    (XTRA[k]=XTRA[k]||[]).push(planEntry(n));await set('ir:extras',XTRA);go('today');
+    return;
+  }
+  PLAN[pickFor].ex.push(planEntry(n));
   await set('ir:plan',PLAN);editDay=pickFor;go('edit');
 }
-function backToEdit(){editDay=pickFor;go('edit');}
+function backToEdit(){if(pickFor==='sess')return go('today');editDay=pickFor;go('edit');}
+
+/* ---- create a custom exercise ---- */
+function newExGo(){xErr='';go('newex');}
+function vNewEx(){
+  return `<div class="card"><div class="eyebrow">Custom exercise · adds to ${pickLabel()}</div>
+    <h2>Create an exercise</h2>
+    <div class="field" style="margin-top:10px"><label>Name</label><input id="x_n" value="${h(xq)}" placeholder="Hammer Strength Row"></div>
+    <div class="field"><label>Equipment</label><select id="x_eq">${EQUIP.map(e=>`<option>${e}</option>`).join('')}</select></div>
+    <div class="field"><label>Primary muscles (feeds the heatmap)</label>
+      <div class="mgrid">${Object.keys(M).map(m=>`<label class="mchk"><input type="checkbox" value="${m}">${M[m]}</label>`).join('')}</div></div>
+    <div class="row3">
+      <div class="field"><label>Reps from</label><input id="x_lo" type="number" inputmode="numeric" value="10"></div>
+      <div class="field"><label>Reps to</label><input id="x_hi" type="number" inputmode="numeric" value="12"></div>
+      <div class="field"><label>Rest (s)</label><input id="x_rest" type="number" inputmode="numeric" value="90"></div></div>
+    <div class="field"><label>Default tempo (optional)</label><input id="x_tp" placeholder="3-1-1-0" autocapitalize="characters">
+      <p class="muted" style="font-size:12px;margin-top:4px">Down, bottom pause, up, top pause in seconds. X = explosive. Leave blank for none.</p></div>
+    ${xErr?`<div class="err" role="alert" style="margin-bottom:10px">${xErr}</div>`:''}
+    <button class="btn" onclick="IR.saveNewEx()">Save and add</button>
+    <button class="btn ghost" style="margin-top:8px" onclick="IR.go('pick')">Cancel</button></div>`;
+}
+/* Tempo: four parts (down-pause-up-pause), digits or X for explosive. Blank = none. */
+const TEMPO_RE=/^[0-9X]-[0-9X]-[0-9X]-[0-9X]$/;
+const normTempo=v=>String(v||'').trim().toUpperCase().replace(/\s+/g,'').replace(/[–—.,/]/g,'-');
+async function saveNewEx(){
+  const g=id=>document.getElementById(id).value;
+  const n=g('x_n').trim().replace(/[\\]/g,''),eq=g('x_eq'),lo=Math.round(+g('x_lo')),hi=Math.round(+g('x_hi')),rest=Math.max(0,Math.round(+g('x_rest')||0)),tp=normTempo(g('x_tp'));
+  const m=[...document.querySelectorAll('.mchk input:checked')].map(x=>x.value);
+  const err=!n?'Give it a name.'
+    :LIB.concat(EXS).some(x=>x.n.toLowerCase()===n.toLowerCase())?`"${h(n)}" is already in the library. Pick it from there, or use a different name.`
+    :!(lo>=1&&hi>=lo&&hi<=100)?'Reps: "from" must be at least 1 and no more than "to".'
+    :tp&&!TEMPO_RE.test(tp)?'Tempo needs four parts like 3-1-1-0 (digits or X), or leave it blank.':'';
+  if(err){
+    const keep={n,eq,lo:g('x_lo'),hi:g('x_hi'),rest:g('x_rest'),tp:g('x_tp'),m};xErr=err;render();
+    document.getElementById('x_n').value=keep.n;document.getElementById('x_eq').value=keep.eq;
+    ['lo','hi','rest','tp'].forEach(f=>document.getElementById('x_'+f).value=keep[f]);
+    document.querySelectorAll('.mchk input').forEach(c=>c.checked=keep.m.includes(c.value));
+    return;
+  }
+  EXS.push({n,eq,m,lo,hi,rest,tempo:tp,cat:'Custom',custom:true,c:null});
+  await set('ir:exercises',EXS);xErr='';xq='';
+  await addEx(n);toast(`${n} saved to your library`);
+}
 
 /* ================= body heatmap ================= */
 function weekSets(){
@@ -1364,6 +1445,7 @@ async function saveBody(){
 boot();
 return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpClose,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
+ xSearch,newExGo,saveNewEx,rmExtra,
  fSearch,logFood,delFood,newFood,logResult,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
 })();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
