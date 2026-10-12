@@ -584,6 +584,7 @@ function xpText(){XP.text=true;drawXP();}
 function xpClose(){XP=null;drawXP();render();}
 async function exportDone(msg){
   META.lastExport=new Date().toISOString();await set('ir:meta',META);
+  if(!XP)return; // sheet already closed
   XP.msg=msg;drawXP();
 }
 function drawXP(){
