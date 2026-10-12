@@ -1,6 +1,6 @@
 /* Iron Route service worker: offline app shell.
    Bump VERSION on every release so phones pick up the new files. */
-const VERSION = 'ir-v3-p2-5';
+const VERSION = 'ir-v3-p2-6';
 const SHELL = ['./', './index.html', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png'];
 

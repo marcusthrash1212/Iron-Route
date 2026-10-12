@@ -114,6 +114,10 @@
   .urow small{color:var(--ink-soft);font-family:'JetBrains Mono';font-size:11px}
   .urow .plus{border:1.5px solid var(--ink);background:#fff;width:34px;height:34px;display:flex;align-items:center;
     justify-content:center;font-size:18px;font-weight:700;flex:none}
+  .lockpick{display:grid;gap:6px}
+  .lockpick button{text-align:left;border:1.5px solid var(--line);background:#fff;padding:10px 12px;cursor:pointer;font-family:'Barlow';color:var(--ink)}
+  .lockpick button b{display:block;font-size:14px}.lockpick button span{font-size:12.5px;color:var(--ink-soft)}
+  .lockpick button.on{border-color:var(--ink);border-width:2.5px;background:#E9EBE6}
   .warm{border:1.5px dashed var(--ink-soft);padding:10px 12px;margin-bottom:6px;background:#fff}
   .warm ol{margin:8px 0 10px;padding-left:20px}.warm li{font-size:13.5px;margin-bottom:5px}
   .tbtn{background:none;border:0;padding:4px 0;text-align:left;cursor:pointer;display:block}
@@ -401,7 +405,7 @@ const SEED_USUALS=[
 /* ================= state ================= */
 /* CUSTOM = saved foods (stored as ir:savedFoods). EXS = custom exercises (Phase 2). */
 /* XTRA = exercises added to one day's session only, keyed by date. */
-let P=null,PLAN=null,LOGS={},BODY=[],FUEL={},CUSTOM=[],SESS={},EXS=[],XTRA={},SETTINGS={},META={},XP=null,
+let P=null,PLAN=null,LOGS={},BODY=[],FUEL={},CUSTOM=[],SESS={},EXS=[],XTRA={},TPL=[],SETTINGS={},META={},XP=null,
     tab='today',restT=null,restLeft=0,sessT=null,editDay=null,pickFor=null,
     fq='',fres=null,fbusy=false,verdict=null,vbusy=false;
 /* Dates are the phone's local calendar day (v2 used UTC, which flipped to
@@ -427,7 +431,7 @@ const h=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"
 async function load(){
   P=await get('ir:profile',null);PLAN=await get('ir:plan',null);LOGS=await get('ir:logs',{});
   BODY=await get('ir:body',[]);FUEL=await get('ir:fuel',{});CUSTOM=await get('ir:savedFoods',[]);
-  SESS=await get('ir:sessions',{});EXS=await get('ir:exercises',[]);XTRA=await get('ir:extras',{});
+  SESS=await get('ir:sessions',{});EXS=await get('ir:exercises',[]);XTRA=await get('ir:extras',{});TPL=await get('ir:templates',[]);
   SETTINGS=await get('ir:settings',{});
   META=await get('ir:meta',{});
 }
@@ -540,7 +544,7 @@ function render(){
     `<button class="${tab===t[0]?'on':''}" onclick="IR.go('${t[0]}')">${t[1]}</button>`).join(''):'';
   document.getElementById('topsub').textContent=P?`${P.name||'Lifter'} · ${PRESETS[P.preset].label}`:'Set up your plan';
   document.getElementById('view').innerHTML=
-    ({intake:vIntake,today:vToday,plan:vPlan,edit:vEdit,pick:vPick,newex:vNewEx,body:vBody,fuel:vFuel,progress:vProgress}[tab])();
+    ({intake:vIntake,today:vToday,plan:vPlan,edit:vEdit,pick:vPick,newex:vNewEx,tpl:vTpl,body:vBody,fuel:vFuel,progress:vProgress}[tab])();
   tickSess();
 }
 function go(t){tab=t;render();window.scrollTo(0,0);}
@@ -597,19 +601,19 @@ async function saveIntake(){
 /* Everything the app stores. New data types get added here so export and
    import pick them up automatically. */
 const KEYS={profile:'ir:profile',plan:'ir:plan',logs:'ir:logs',sessions:'ir:sessions',body:'ir:body',
-  fuel:'ir:fuel',savedFoods:'ir:savedFoods',customExercises:'ir:exercises',sessionExtras:'ir:extras',settings:'ir:settings'};
-const BLANK={profile:null,plan:null,logs:{},sessions:{},body:[],fuel:{},savedFoods:[],customExercises:[],sessionExtras:{},settings:{}};
+  fuel:'ir:fuel',savedFoods:'ir:savedFoods',customExercises:'ir:exercises',sessionExtras:'ir:extras',workouts:'ir:templates',settings:'ir:settings'};
+const BLANK={profile:null,plan:null,logs:{},sessions:{},body:[],fuel:{},savedFoods:[],customExercises:[],sessionExtras:{},workouts:[],settings:{}};
 /* Built from what's in memory, synchronously: it still captures changes a
    failed write couldn't store, and keeps the tap's permission to open Share. */
 function currentData(){
   return{profile:P,plan:PLAN,logs:LOGS,sessions:SESS,body:BODY,fuel:FUEL,
-    savedFoods:CUSTOM,customExercises:EXS,sessionExtras:XTRA,settings:SETTINGS};
+    savedFoods:CUSTOM,customExercises:EXS,sessionExtras:XTRA,workouts:TPL,settings:SETTINGS};
 }
 function counts(d){
   const sets=Object.values(d.logs||{}).reduce((a,day)=>a+Object.values(day||{})
     .reduce((b,rows)=>b+(Array.isArray(rows)?rows.filter(r=>r&&r.done).length:0),0),0);
   return[['Sessions',Object.keys(d.sessions||{}).length],['Sets completed',sets],
-    ['Plan days',Object.keys(d.plan||{}).length],['Custom exercises',(d.customExercises||[]).length],
+    ['Plan days',Object.keys(d.plan||{}).length],['Custom exercises',(d.customExercises||[]).length],['Saved workouts',(d.workouts||[]).length],
     ['Food log entries',Object.values(d.fuel||{}).reduce((a,f)=>a+((f&&f.items)||[]).length,0)],
     ['Saved foods',(d.savedFoods||[]).length],['Body check-ins',(d.body||[]).length]];
 }
@@ -735,7 +739,7 @@ function historyFor(name,limit){
 }
 function suggest(e){
   const h=historyFor(e.n,1);
-  if(!h.length)return{txt:'First time — pick a weight you could do two more reps with, and log it.',cls:''};
+  if(!h.length)return{txt:e.w?`Planned: ${e.w} lb × ${e.r}. Adjust if it feels off, and log it.`:'First time — pick a weight you could do two more reps with, and log it.',cls:''};
   const sets=h[0].sets.filter(s=>+s.w>0);
   if(!sets.length)return{txt:'No weight logged last time. Enter one today so the app can progress you.',cls:''};
   const top=sets.reduce((a,b)=>+b.w>+a.w?b:a);
@@ -768,7 +772,7 @@ function vToday(){
       <div class="idx">${j+1}</div>
       ${tpo?`<input class="tpin" value="${h(st.tp!==undefined?st.tp:(e.tempo||''))}" placeholder="none" autocapitalize="characters"
         aria-label="Tempo for set ${j+1}" oninput="IR.setTempo('${esc(e.n)}',${j},this)">`:''}
-      <input class="${st.done?'done':''}" inputmode="decimal" placeholder="lb" value="${st.w}" oninput="IR.setVal('${esc(e.n)}',${j},'w',this.value)">
+      <input class="${st.done?'done':''}" inputmode="decimal" placeholder="${e.w?e.w+' lb':'lb'}" value="${st.w}" oninput="IR.setVal('${esc(e.n)}',${j},'w',this.value)">
       <input class="${st.done?'done':''}" inputmode="numeric" placeholder="reps" value="${st.r}" oninput="IR.setVal('${esc(e.n)}',${j},'r',this.value)">
       <button class="tick ${st.done?'on':''}" onclick="IR.toggle('${esc(e.n)}',${j},${e.rest||0})" aria-label="Complete set ${j+1}">✓</button>
     </div>`).join('');
@@ -776,7 +780,7 @@ function vToday(){
     const grpHead=e.g&&(!prev||prev.g!==e.g)?`<div style="margin-bottom:6px"><span class="pill grp">Superset ${e.g}</span><span class="muted" style="font-size:12px">Alternate these two, rest only after the pair</span></div>`:'';
     return `${grpHead}<div class="ex ${e.g?'grp':''}">
       ${extra?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span class="pill grp">Added today</span>
-        ${rows.some(r=>r.done)?'':`<button class="btn ghost sm" style="padding:4px 9px" onclick="IR.rmExtra(${i-nPlan})">Remove</button>`}</div>`:''}
+        ${rows.some(r=>r.done)?'':`<button class="btn ghost sm" style="padding:4px 9px" onclick="IR.rmExtra('${esc(e.n)}')">Remove</button>`}</div>`:''}
       <div class="ex-h"><div class="ex-n">${h(e.n)}${lib.custom?' <span class="pill" style="font-size:8.5px;padding:2px 5px">Custom</span>':''}</div><div class="ex-t num">${e.s} × ${h(e.r)}</div></div>
       ${e.rest||e.tempo?`<button class="tempo tbtn" onclick="IR.tpToggle('${esc(e.n)}')">${e.tempo?'Tempo '+tempoText(e.tempo):'No set tempo'} · <u>${tpOpen.has(e.n)?'done':'per set'}</u></button>`:''}
       <div class="target">${sg.txt}</div>
@@ -795,9 +799,9 @@ function vToday(){
     <div class="eyebrow">Week ${b.week} of 7 ${b.deload?'':'· Block '+b.block}</div>
     <div style="font-size:14px;margin-top:3px">${b.msg}</div></div>
   <div class="card">
-    <span class="pill ${day.cls}">${day.w}</span><span class="pill" style="background:var(--p-red)">${dayName(d)}</span>
-    <h2 style="margin-top:8px">${day.t}</h2>
-    <p class="muted" style="margin-top:4px">${day.n}</p>
+    <span class="pill ${day.cls}">${day.w}</span><span class="pill" style="background:var(--p-red)">${dayName(d)}</span>${day.lock?'<span class="pill">Locked</span>':''}
+    <h2 style="margin-top:8px">${h(day.t)}</h2>
+    <p class="muted" style="margin-top:4px">${h(day.n)}</p>
     <div class="row2" style="margin-top:12px" id="sessbtns">${sessBtns(d)}</div>
     <div class="stat" style="margin-top:10px"><span>Sets completed</span><b>${doneSets} / ${totalSets}</b></div>
     <div class="stat"><span>Volume lifted</span><b>${fmt(volume)} lb</b></div>
@@ -880,9 +884,11 @@ function vWarm(list,k){
 }
 
 /* The day's planned exercises plus anything added to this session only. */
-const sessEx=(k,d)=>PLAN[d].ex.concat(XTRA[k]||[]);
-async function rmExtra(i){
-  const k=curKey();(XTRA[k]||[]).splice(i,1);if(XTRA[k]&&!XTRA[k].length)delete XTRA[k];
+/* An added exercise the plan already has (e.g. after the day changed) is shown once. */
+const sessEx=(k,d)=>{const p=PLAN[d].ex;return p.concat((XTRA[k]||[]).filter(x=>!p.some(e=>e.n===x.n)));};
+async function rmExtra(n){
+  const k=curKey(),l=XTRA[k]||[],i=l.findIndex(x=>x.n===n);if(i<0)return;
+  l.splice(i,1);if(!l.length)delete XTRA[k];
   await set('ir:extras',XTRA);render();
 }
 function setRows(k,name){
@@ -943,13 +949,13 @@ function vPlan(){
   <div class="card"><div class="eyebrow">Before each workout</div>
     <div class="ready" style="margin-top:8px">${WARM_OPTS.map(o=>`<button class="${warmMode()===o[0]?'on':''}" onclick="IR.setWarm('${o[0]}')">${o[1]}</button>`).join('')}</div>
     <p class="muted" style="margin-top:8px;font-size:12.5px">Built from each day's muscles and shown above the first exercise. One tap skips it. Warm-up sets never count toward your weekly volume.</p>
-  </div>`+[0,1,2,3,4,5,6].map(d=>{
+  </div>${vTplList()}`+[0,1,2,3,4,5,6].map(d=>{
     const p=PLAN[d];
     return `<div class="card" ${d===dow()?'style="border-color:var(--p-red);border-width:2px"':''}>
       <div style="display:flex;justify-content:space-between;align-items:center">
-        <div><span class="pill ${p.cls}">${p.w}</span><span class="eyebrow">${dayName(d)}</span></div>
+        <div><span class="pill ${p.cls}">${p.w}</span><span class="eyebrow">${dayName(d)}</span>${p.tpl?' <span class="pill grp">Saved</span>':''}${p.lock?'<span class="pill">Locked</span>':''}</div>
         <button class="btn ghost sm" onclick="IR.editDayGo(${d})">Edit</button></div>
-      <h3 style="font-size:16px;margin:8px 0 8px">${p.t}</h3>
+      <h3 style="font-size:16px;margin:8px 0 8px">${h(p.t)}</h3>
       ${p.ex.map(e=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0">
         <span>${e.g?`<span class="pill grp" style="padding:1px 4px">${e.g}</span>`:''}${h(e.n)}</span>
         <span class="num muted">${e.s>1?e.s+' × ':''}${e.r}</span></div>`).join('')}
@@ -1022,13 +1028,13 @@ async function applyPreset(to){
 }
 
 /* ================= day editor ================= */
-function editDayGo(d){editDay=d;go('edit');}
+function editDayGo(d){editDay=d;editTpl=null;go('edit');}
 function vEdit(){
   const d=editDay,p=PLAN[d];
   return `<div class="card">
     <div class="eyebrow">Editing ${dayName(d)}</div>
     <div class="field" style="margin-top:8px"><label>Day name</label>
-      <input value="${p.t}" onchange="IR.setDay('t',this.value)"></div>
+      <input value="${h(p.t)}" onchange="IR.setDay('t',this.value)"></div>
     <div class="row2">
       <div class="field"><label>Time of day</label>
         <select onchange="IR.setDay('w',this.value)">
@@ -1038,68 +1044,154 @@ function vEdit(){
           <option value="">Swap with…</option>
           ${[0,1,2,3,4,5,6].filter(x=>x!==d).map(x=>`<option value="${x}">${dayName(x)}</option>`).join('')}
         </select></div></div>
-    <div class="field"><label>Note to yourself</label><input value="${p.n}" onchange="IR.setDay('n',this.value)"></div>
+    <div class="field"><label>Note to yourself</label><input value="${h(p.n)}" onchange="IR.setDay('n',this.value)"></div>
   </div>
-  <div class="card">
+  ${p.tpl&&TPL.some(t=>t.id===p.tpl)?`<div class="note" style="margin:0 0 12px">This day runs your saved workout "${h(TPL.find(t=>t.id===p.tpl).name)}". Changing its exercises here changes this day only and unlinks it from the saved workout.</div>`:''}
+  ${vExList(p,d)}
+  <div class="card"><button class="btn ghost" onclick="IR.go('plan')">Done editing</button></div>`;
+}
+/* Exercise list editor shared by plan days and saved workouts (edObj). */
+function vExList(p,addTo){
+  return `<div class="card">
     <div class="eyebrow">Exercises</div>
+    ${p.ex.length?'':'<p class="muted" style="margin-top:6px">No exercises yet. Add the first one below.</p>'}
     ${p.ex.map((e,i)=>`<div style="border-top:1px solid var(--line);padding:10px 0">
       <div class="edrow" style="border:0;padding:0">
         <div style="font-weight:700;font-size:14.5px">${e.g?`<span class="pill grp" style="padding:1px 5px">${e.g}</span>`:''}${h(e.n)}</div>
         <div class="mini">
           <button onclick="IR.moveEx(${i},-1)" ${i===0?'disabled':''} aria-label="Move up">↑</button>
           <button onclick="IR.moveEx(${i},1)" ${i===p.ex.length-1?'disabled':''} aria-label="Move down">↓</button>
-          <button onclick="IR.groupEx(${i})" aria-label="Superset">⛓</button>
+          <button onclick="IR.groupEx(${i})" aria-label="Superset with the one above">⛓</button>
           <button onclick="IR.delEx(${i})" style="color:var(--p-red)" aria-label="Remove">×</button></div>
       </div>
-      <div class="row3" style="margin-top:8px">
+      <div class="row2" style="margin-top:8px">
         <div><label>Sets</label><input type="number" inputmode="numeric" value="${e.s}" onchange="IR.setEx(${i},'s',this.value)"></div>
-        <div><label>Reps</label><input value="${e.r}" onchange="IR.setEx(${i},'r',this.value)"></div>
-        <div><label>Rest (s)</label><input type="number" inputmode="numeric" value="${e.rest||0}" onchange="IR.setEx(${i},'rest',this.value)"></div>
-      </div>
+        <div><label>Reps</label><input value="${h(e.r)}" onchange="IR.setEx(${i},'r',this.value)"></div></div>
+      <div class="row2" style="margin-top:8px">
+        <div><label>Weight (lb)</label><input type="number" inputmode="decimal" value="${e.w||''}" placeholder="optional" onchange="IR.setEx(${i},'w',this.value)"></div>
+        <div><label>Rest (s)</label><input type="number" inputmode="numeric" value="${e.rest||0}" onchange="IR.setEx(${i},'rest',this.value)"></div></div>
       <div style="margin-top:8px"><label>Tempo — down / pause / up / top pause (s), X = explosive, blank = none</label>
         <input value="${h(e.tempo||'')}" placeholder="3-1-1-0" autocapitalize="characters" oninput="IR.setTempoPlan(${i},this)">
         <div class="err hide" style="font-size:12.5px">Use four parts like 3-1-1-0 (digits or X), or leave it blank. Not saved yet.</div></div>
     </div>`).join('')}
-    <button class="btn" style="margin-top:12px" onclick="IR.pickGo(${d})">Add an exercise</button>
-  </div>
-  <div class="card"><button class="btn ghost" onclick="IR.go('plan')">Done editing</button></div>`;
+    <button class="btn" style="margin-top:12px" onclick="IR.pickGo(${typeof addTo==='number'?addTo:`'${addTo}'`})">Add an exercise</button>
+  </div>`;
 }
-async function setDay(f,v){PLAN[editDay][f]=v;await set('ir:plan',PLAN);}
+/* What the exercise editor is working on: a saved workout (editTpl) or a plan day. */
+let editTpl=null;
+const edObj=()=>editTpl?TPL.find(t=>t.id===editTpl):PLAN[editDay];
+async function edSave(){
+  if(editTpl){syncTpl(edObj());await set('ir:templates',TPL);}
+  else delete PLAN[editDay].tpl; // a hand-edited day no longer follows its saved workout
+  await set('ir:plan',PLAN);
+}
+async function setDay(f,v){PLAN[editDay][f]=v;if(f==='t')delete PLAN[editDay].tpl;await set('ir:plan',PLAN);}
 async function moveDay(to){
   if(to==='')return;to=+to;
   const a=PLAN[editDay],b=PLAN[to];PLAN[editDay]=b;PLAN[to]=a;
   await set('ir:plan',PLAN);editDay=to;render();
 }
 async function setEx(i,f,v){
-  const e=PLAN[editDay].ex[i];
-  e[f]=(f==='s'||f==='rest')?+v:v;
+  const e=edObj().ex[i];
+  if(f==='w'){const n=+v;if(n>0)e.w=n;else delete e.w;}
+  else e[f]=(f==='s'||f==='rest')?Math.max(f==='s'?1:0,Math.round(+v)||0):v;
   if(f==='r'){const m=String(v).match(/(\d+)\D+(\d+)/);if(m){e.lo=+m[1];e.hi=+m[2];}else{const n=+String(v).match(/\d+/);if(n){e.lo=n;e.hi=n;}}}
-  await set('ir:plan',PLAN);
+  await edSave();
 }
 /* Saves only a valid tempo (or blank); otherwise flags the field and keeps the old value. */
 async function setTempoPlan(i,el){
   const v=normTempo(el.value),ok=tempoOk(v);
   el.classList.toggle('bad',!ok);el.nextElementSibling.classList.toggle('hide',ok);
-  if(ok){PLAN[editDay].ex[i].tempo=v;await set('ir:plan',PLAN);}
+  if(ok){edObj().ex[i].tempo=v;await edSave();}
 }
 async function moveEx(i,dir){
-  const a=PLAN[editDay].ex;const j=i+dir;if(j<0||j>=a.length)return;
-  [a[i],a[j]]=[a[j],a[i]];await set('ir:plan',PLAN);render();
+  const a=edObj().ex;const j=i+dir;if(j<0||j>=a.length)return;
+  [a[i],a[j]]=[a[j],a[i]];await edSave();render();
 }
-async function delEx(i){PLAN[editDay].ex.splice(i,1);await set('ir:plan',PLAN);render();}
+async function delEx(i){edObj().ex.splice(i,1);await edSave();render();}
 async function groupEx(i){
-  const a=PLAN[editDay].ex,e=a[i];
+  const a=edObj().ex,e=a[i];
   if(e.g){delete e.g;}
   else{
     const prev=a[i-1];
     e.g=prev&&prev.g?prev.g:String.fromCharCode(65+['A','B','C','D'].filter(L=>a.some(x=>x.g===L)).length);
     if(prev&&!prev.g)prev.g=e.g;
   }
-  await set('ir:plan',PLAN);render();
+  await edSave();render();
 }
+/* ---- saved workouts (2.6): named templates, slotted into plan days as linked copies ----
+   lock: false = "Let the app adjust it" (default), true = "Lock it" (runs exactly as written). */
+const cloneEx=ex=>JSON.parse(JSON.stringify(ex));
+const dayCls=w=>w==='AM'?'am':'pm';
+/* Pushes a saved workout's latest version onto every day that runs it. */
+function syncTpl(t){
+  [0,1,2,3,4,5,6].forEach(d=>{const p=PLAN[d];if(p&&p.tpl===t.id){p.t=t.name;p.ex=cloneEx(t.ex);p.lock=!!t.lock;p.cls=dayCls(p.w);}});
+}
+function tplDays(id){return [0,1,2,3,4,5,6].filter(d=>PLAN[d]&&PLAN[d].tpl===id);}
+async function tplNew(){
+  const t={id:newId('w'),name:'New workout',lock:false,ex:[]};
+  TPL.push(t);await set('ir:templates',TPL);tplOpen(t.id);
+}
+function tplOpen(id){editTpl=id;go('tpl');}
+async function tplDup(id){
+  const s=TPL.find(t=>t.id===id);if(!s)return;
+  const t={id:newId('w'),name:`${s.name} (copy)`,lock:s.lock,ex:cloneEx(s.ex)};
+  TPL.splice(TPL.indexOf(s)+1,0,t);await set('ir:templates',TPL);toast(`Duplicated as "${t.name}"`);tplOpen(t.id);
+}
+async function tplSet(f,v){
+  const t=edObj();
+  if(f==='name'){v=String(v).trim();if(!v)return render();t.name=v;}
+  if(f==='lock')t.lock=!!v;
+  await edSave();if(f==='lock')render();
+}
+async function tplDelete(){
+  const t=edObj(),days=tplDays(t.id);
+  if(!confirm(`Delete "${t.name}"?${days.length?`\n\n${days.map(dayName).join(', ')} keep${days.length===1?'s':''} a copy of it and stop${days.length===1?'s':''} following it.`:''}`))return;
+  days.forEach(d=>delete PLAN[d].tpl);
+  TPL.splice(TPL.indexOf(t),1);editTpl=null;
+  await set('ir:templates',TPL);await set('ir:plan',PLAN);go('plan');
+}
+async function tplSlot(id,d){
+  if(d==='')return;d=+d;
+  const t=TPL.find(x=>x.id===id),p=PLAN[d];
+  if(!t||!t.ex.length){toast('Add exercises to this workout first');return render();}
+  if(!confirm(`Put "${t.name}" on ${dayName(d)}? It replaces ${dayName(d)}'s current workout, "${p.t}". Logs from past ${dayName(d)}s are kept.`))return render();
+  PLAN[d]={t:t.name,w:p.w,cls:dayCls(p.w),n:t.lock?'Locked: runs exactly as written.':'Your saved workout.',ex:cloneEx(t.ex),tpl:t.id,lock:!!t.lock};
+  await set('ir:plan',PLAN);render();toast(`${t.name} is on ${dayName(d)}`);
+}
+function vTplList(){
+  return `<div class="card"><div class="eyebrow">My workouts</div><h3 style="font-size:15px;margin:4px 0 8px">Build your own, put it on any day</h3>
+    ${TPL.map(t=>{const days=tplDays(t.id);return `<div style="border-top:1px solid var(--line);padding:10px 0">
+      <div class="edrow" style="border:0;padding:0"><div><b>${h(t.name)}</b>${t.lock?' <span class="pill">Locked</span>':''}<br>
+        <small class="muted">${t.ex.length} exercise${t.ex.length===1?'':'s'}${days.length?' · on '+days.map(d=>dayName(d).slice(0,3)).join(', '):''}</small></div>
+        <div style="display:flex;gap:6px"><button class="btn ghost sm" onclick="IR.tplOpen('${t.id}')">Edit</button>
+          <button class="btn ghost sm" onclick="IR.tplDup('${t.id}')">Duplicate</button></div></div>
+      <select style="margin-top:8px" onchange="IR.tplSlot('${t.id}',this.value)" aria-label="Put ${h(t.name)} on a day">
+        <option value="">Put it on a day…</option>${[0,1,2,3,4,5,6].map(d=>`<option value="${d}">${dayName(d)} (now: ${h(PLAN[d].t)})</option>`).join('')}</select>
+    </div>`;}).join('')}
+    <button class="btn" style="margin-top:8px" onclick="IR.tplNew()">Build a new workout</button></div>`;
+}
+function vTpl(){
+  const t=edObj();if(!t){editTpl=null;return vPlan();}
+  const days=tplDays(t.id);
+  return `<div class="card"><div class="eyebrow">Saved workout · saves as you go</div>
+    <div class="field" style="margin-top:8px"><label>Workout name</label><input value="${h(t.name)}" onchange="IR.tplSet('name',this.value)"></div>
+    <label>When your week gets rough</label>
+    <div class="lockpick">
+      <button class="${t.lock?'':'on'}" onclick="IR.tplSet('lock',false)"><b>Let the app adjust it</b><span>The scheduler can move it and trim sets on rough days, like any other session.</span></button>
+      <button class="${t.lock?'on':''}" onclick="IR.tplSet('lock',true)"><b>Lock it</b><span>Stays on its day exactly as written. Readiness taps are still logged.</span></button>
+    </div>
+    ${days.length?`<p class="muted" style="font-size:12.5px;margin-top:10px">On ${days.map(dayName).join(', ')}. Changes here update ${days.length===1?'that day':'those days'}.</p>`:''}
+  </div>
+  ${vExList(t,'tpl')}
+  <div class="card"><button class="btn" onclick="IR.go('plan')">Done</button>
+    <div class="row2" style="margin-top:8px"><button class="btn ghost" onclick="IR.tplDup('${t.id}')">Duplicate</button>
+      <button class="btn ghost" style="color:var(--p-red);border-color:var(--p-red)" onclick="IR.tplDelete()">Delete</button></div></div>`;
+}
+
 /* ---- exercise library: pickFor is a day number (plan) or 'sess' (today's session only) ---- */
 let xq='',xErr='';
-const pickLabel=()=>pickFor==='sess'?"today's session":dayName(pickFor);
+const pickLabel=()=>pickFor==='sess'?"today's session":pickFor==='tpl'?`"${h(edObj().name)}"`:dayName(pickFor);
 function pickGo(d){pickFor=d;xq='';go('pick');}
 function exRow(x){
   return `<div class="usual"><div>${h(x.n)}${x.custom?' <span class="pill" style="font-size:8.5px;padding:2px 5px">Custom</span>':''}<br>
@@ -1115,7 +1207,7 @@ function vPick(){
     <button class="btn" style="margin-top:10px" onclick="IR.newExGo()">Create a custom exercise</button></div>`
   +(groups.length?groups.map(g=>`<div class="card"><div class="eyebrow">${g[0]}</div>${g[1].map(exRow).join('')}</div>`).join('')
     :`<div class="card"><p class="muted">Nothing matches "${h(xq)}". Create it as a custom exercise.</p></div>`)
-  +`<div class="card"><button class="btn ghost" onclick="IR.backToEdit()">Back to ${pickFor==='sess'?'today':'the day'}</button></div>`;
+  +`<div class="card"><button class="btn ghost" onclick="IR.backToEdit()">Back to ${pickFor==='sess'?'today':pickFor==='tpl'?'the workout':'the day'}</button></div>`;
 }
 function xSearch(v){
   xq=v;const pos=document.getElementById('x_q').selectionStart;render();
@@ -1132,10 +1224,11 @@ async function addEx(n){
     (XTRA[k]=XTRA[k]||[]).push(planEntry(n));await set('ir:extras',XTRA);go('today');
     return;
   }
-  PLAN[pickFor].ex.push(planEntry(n));
-  await set('ir:plan',PLAN);editDay=pickFor;go('edit');
+  if(pickFor==='tpl'){edObj().ex.push(planEntry(n));await edSave();go('tpl');return;}
+  editDay=pickFor;editTpl=null;PLAN[pickFor].ex.push(planEntry(n));
+  await edSave();go('edit');
 }
-function backToEdit(){if(pickFor==='sess')return go('today');editDay=pickFor;go('edit');}
+function backToEdit(){if(pickFor==='sess')return go('today');if(pickFor==='tpl')return go('tpl');editDay=pickFor;editTpl=null;go('edit');}
 
 /* ---- create a custom exercise ---- */
 function newExGo(){xErr='';go('newex');}
@@ -1620,6 +1713,7 @@ boot();
 return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpClose,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
  xSearch,newExGo,saveNewEx,rmExtra,tpToggle,setTempo,setTempoPlan,setWarm,warmMark,presetConfirm,presetCancel,cancelPending,
+ tplNew,tplOpen,tplDup,tplSet,tplDelete,tplSlot,
  fSearch,logFood,delFood,newFood,logResult,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
 })();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
