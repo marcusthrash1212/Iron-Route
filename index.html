@@ -114,6 +114,8 @@
   .urow small{color:var(--ink-soft);font-family:'JetBrains Mono';font-size:11px}
   .urow .plus{border:1.5px solid var(--ink);background:#fff;width:34px;height:34px;display:flex;align-items:center;
     justify-content:center;font-size:18px;font-weight:700;flex:none}
+  .warm{border:1.5px dashed var(--ink-soft);padding:10px 12px;margin-bottom:6px;background:#fff}
+  .warm ol{margin:8px 0 10px;padding-left:20px}.warm li{font-size:13.5px;margin-bottom:5px}
   .tbtn{background:none;border:0;padding:4px 0;text-align:left;cursor:pointer;display:block}
   .set.withtp{grid-template-columns:24px 1.1fr 1fr 1fr 40px}
   #ir .set input.tpin{font-size:13px;padding:8px 2px}
@@ -805,7 +807,7 @@ function vToday(){
     <div style="margin-top:12px"><label>How did that feel? One tap, or skip it</label>
       <div class="ready">${READY.map(r=>`<button class="${s.ready===r[0]?'on':''}" onclick="IR.setReady('${r[0]}')">${r[1]}</button>`).join('')}</div></div>
     <div class="note">Now go eat. You have ${Math.max(0,P.t.prot-pTot)}g of protein left today.</div></div>`:''}
-  <div class="card">${ex}
+  <div class="card">${vWarm(list,k)}${ex}
     <button class="btn ghost" style="margin-top:10px" onclick="IR.pickGo('sess')">Add an exercise</button></div>
   <div class="card">
     <div class="eyebrow">Protein today — the one that decides everything</div>
@@ -821,6 +823,59 @@ function sessBtns(d){
       :`<button class="btn red" onclick="IR.endSess()">Finish workout</button>`}
     <button class="btn ghost" onclick="IR.editDayGo(${d})">Edit today</button>`;
 }
+/* ---- warm-ups and stretches (2.4): generated, never logged, so never counted as volume ---- */
+const WARM_OPTS=[['warmup','Warm-up'],['stretch','Stretches'],['both','Both'],['off','Off']];
+const warmMode=()=>SETTINGS.warm||'both';
+async function setWarm(v){SETTINGS.warm=v;await set('ir:settings',SETTINGS);render();}
+const STRETCH={
+  quads:['Leg swings, front to back','10 each leg'],hams:['Walking toe touches','10 each leg'],
+  glutes:['Hip circles','10 each way'],calves:['Calf pumps against a wall','20'],lowback:['Cat-cow','8 slow'],
+  chest:['Arm swings across the chest','15'],delts:['Arm circles, small to big','10 each way'],
+  rear:['Band pull-aparts, light','15'],upback:['Band pull-aparts, light','15'],lats:['Overhead reach and side bend','8 each side'],
+  biceps:['Arm circles, small to big','10 each way'],triceps:['Arm circles, small to big','10 each way'],
+  forearms:['Wrist circles','10 each way'],abs:['Standing trunk rotations','10 each side']};
+const isCompound=x=>(x.m||[]).length>=2&&!['Cardio','Mobility'].includes(x.cat);
+const r5=n=>Math.max(5,Math.round(n/5)*5);
+/* Working weight for the ramp-up: today's first typed weight, else last session's top set, else the plan's. */
+function workingWeight(e,k){
+  const today=((LOGS[k]||{})[e.n]||[]).map(s=>+s.w).find(w=>w>0);if(today)return today;
+  const past=historyFor(e.n,3).filter(x=>x.d!==k)[0];
+  if(past){const ws=past.sets.map(s=>+s.w).filter(w=>w>0);if(ws.length)return Math.max(...ws);}
+  return +e.w||0;
+}
+function warmState(k){return (SETTINGS.warmDone||{})[k]||null;}
+async function warmMark(v){
+  const k=curKey(),m=SETTINGS.warmDone=SETTINGS.warmDone||{},cut=keyOf(new Date(Date.now()-14*864e5));
+  Object.keys(m).forEach(d=>{if(d<cut)delete m[d];}); // keep two weeks
+  if(v)m[k]=v;else delete m[k];
+  await set('ir:settings',SETTINGS);render();
+}
+function vWarm(list,k){
+  const mode=warmMode();if(mode==='off'||!list.length)return '';
+  const st=warmState(k);
+  if(st)return `<button class="tbtn tempo" style="margin-bottom:6px" onclick="IR.warmMark(null)">Warm-up ${st==='done'?'done ✓':'skipped'} · <u>show</u></button>`;
+  const muscles=[];list.forEach(e=>(findEx(e.n).m||[]).forEach(m=>{if(!muscles.includes(m))muscles.push(m);}));
+  const items=[];
+  if(mode!=='stretch')items.push(['General warm-up','About 5 min easy on the rower or ClimbMill']);
+  if(mode!=='warmup'){
+    const seen=new Set();
+    muscles.forEach(m=>{const s=STRETCH[m];if(s&&!seen.has(s[0])&&seen.size<5){seen.add(s[0]);items.push(s);}});
+    if(!seen.size)items.push(['Arm circles and leg swings','10 each']);
+  }
+  if(mode!=='stretch'){
+    const c=list.find(e=>isCompound(findEx(e.n)));
+    if(c){
+      const w=workingWeight(c,k);
+      items.push([`Ramp-up: ${c.n}`,w?`${r5(w*.5)} lb × 8, then ${r5(w*.75)} lb × 3 (working weight ${w} lb)`
+        :'50% × 8, then 75% × 3 of your working weight']);
+    }
+  }
+  return `<div class="warm"><div class="ex-h"><div class="ex-n">Warm-up</div><span class="muted" style="font-size:11.5px">Not counted in volume</span></div>
+    <ol>${items.map(i=>`<li><b>${h(i[0])}</b> <span class="muted">· ${h(i[1])}</span></li>`).join('')}</ol>
+    <div class="row2"><button class="btn sm green" onclick="IR.warmMark('done')">Done</button>
+      <button class="btn sm ghost" onclick="IR.warmMark('skip')">Skip</button></div></div>`;
+}
+
 /* The day's planned exercises plus anything added to this session only. */
 const sessEx=(k,d)=>PLAN[d].ex.concat(XTRA[k]||[]);
 async function rmExtra(i){
@@ -879,6 +934,10 @@ function vPlan(){
       ${Object.keys(PRESETS).map(k=>`<option value="${k}" ${P.preset===k?'selected':''}>${PRESETS[k].label}</option>`).join('')}
     </select>
     <p class="muted" style="margin-top:6px;font-size:12px">Changing this rebuilds the plan. Your logs are kept.</p>
+  </div>
+  <div class="card"><div class="eyebrow">Before each workout</div>
+    <div class="ready" style="margin-top:8px">${WARM_OPTS.map(o=>`<button class="${warmMode()===o[0]?'on':''}" onclick="IR.setWarm('${o[0]}')">${o[1]}</button>`).join('')}</div>
+    <p class="muted" style="margin-top:8px;font-size:12.5px">Built from each day's muscles and shown above the first exercise. One tap skips it. Warm-up sets never count toward your weekly volume.</p>
   </div>`+[0,1,2,3,4,5,6].map(d=>{
     const p=PLAN[d];
     return `<div class="card" ${d===dow()?'style="border-color:var(--p-red);border-width:2px"':''}>
@@ -1482,7 +1541,7 @@ async function saveBody(){
 boot();
 return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpClose,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
- xSearch,newExGo,saveNewEx,rmExtra,tpToggle,setTempo,setTempoPlan,
+ xSearch,newExGo,saveNewEx,rmExtra,tpToggle,setTempo,setTempoPlan,setWarm,warmMark,
  fSearch,logFood,delFood,newFood,logResult,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
 })();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
