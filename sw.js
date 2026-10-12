@@ -1,6 +1,6 @@
 /* Iron Route service worker: offline app shell.
    Bump VERSION on every release so phones pick up the new files. */
-const VERSION = 'ir-v3-p1-1';
+const VERSION = 'ir-v3-p1-3';
 const SHELL = ['./', './index.html', './manifest.webmanifest',
   './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png'];
 
@@ -21,7 +21,7 @@ self.addEventListener('fetch', e => {
 
   // The page itself: network first so updates land, cache when offline.
   if (req.mode === 'navigate') {
-    e.respondWith(fetch(req)
+    e.respondWith(fetch(req.url, { cache: 'no-cache', credentials: 'same-origin' })
       .then(r => { const copy = r.clone(); caches.open(VERSION).then(c => c.put('./index.html', copy)); return r; })
       .catch(() => caches.match('./index.html')));
     return;

@@ -99,12 +99,18 @@
   .spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--ink);border-radius:50%;animation:sp .7s linear infinite}
   @keyframes sp{to{transform:rotate(360deg)}}
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
-  .hide{display:none}
+  .savefail{background:var(--p-red);color:#fff;padding:12px 16px;font-weight:700;font-size:14px;position:sticky;top:0;z-index:40}
+  .ready{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+  .ready button{border:1.5px solid var(--ink);background:#fff;color:var(--ink);font-family:'Barlow';font-weight:700;
+    font-size:13px;padding:12px 2px;cursor:pointer}
+  .ready button.on{background:var(--ink);color:#fff}
+  .hide{display:none!important}
 </style>
 </head>
 <body>
 
 <div id="ir">
+  <div class="savefail hide" id="savefail" role="alert"></div>
   <div class="top">
     <div><h1>Iron Route</h1><div class="sub" id="topsub">Loading</div></div>
     <div class="sess" id="sess"></div>
@@ -124,10 +130,55 @@
 const IR=(function(){
 "use strict";
 
-/* ================= storage ================= */
-const mem={};
-async function get(k,d){try{const r=await window.storage.get(k);return r?JSON.parse(r.value):(mem[k]!==undefined?mem[k]:d);}catch(e){return mem[k]!==undefined?mem[k]:d;}}
-async function set(k,v){mem[k]=v;try{await window.storage.set(k,JSON.stringify(v));}catch(e){}}
+/* ================= storage (IndexedDB) ================= */
+/* Every write commits with strict durability and is read back inside the same
+   transaction. A failed write shows a red banner; it never fails silently. */
+const DB_NAME='iron-route',STORE='kv',mem={};
+let dbp=null,failed={},persisted=null;
+function db(){
+  return dbp=dbp||new Promise((res,rej)=>{
+    const r=indexedDB.open(DB_NAME,1);
+    r.onupgradeneeded=()=>r.result.createObjectStore(STORE);
+    r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);r.onblocked=()=>rej(new Error('Database blocked'));
+  });
+}
+function tx(mode,fn){
+  return db().then(d=>new Promise((res,rej)=>{
+    const t=mode==='readwrite'?d.transaction(STORE,mode,{durability:'strict'}):d.transaction(STORE,mode);
+    const out=fn(t.objectStore(STORE));
+    t.oncomplete=()=>res(out);t.onerror=t.onabort=()=>rej(t.error||new Error('Transaction aborted'));
+  }));
+}
+async function get(k,d){
+  try{const v=(await tx('readonly',s=>s.get(k))).result;return v===undefined?(mem[k]!==undefined?mem[k]:d):v;}
+  catch(e){saveFailed(k,e);return mem[k]!==undefined?mem[k]:d;}
+}
+async function set(k,v){
+  mem[k]=v;
+  const snap=JSON.stringify(v);
+  try{
+    let check;
+    await tx('readwrite',s=>{s.put(JSON.parse(snap),k);check=s.get(k);});
+    if(JSON.stringify(check.result)!==snap)throw new Error('Read-back did not match');
+    if(failed[k]){delete failed[k];drawFail();}
+  }catch(e){saveFailed(k,e);}
+}
+async function getAllKeys(){try{return (await tx('readonly',s=>s.getAllKeys())).result;}catch(e){return Object.keys(mem);}}
+function saveFailed(k,e){failed[k]=String(e&&e.message||e);drawFail();}
+function drawFail(){
+  const el=document.getElementById('savefail');if(!el)return;
+  const ks=Object.keys(failed);
+  el.classList.toggle('hide',!ks.length);
+  el.innerHTML=ks.length?`Save failed. Your latest changes are on screen but NOT stored on this phone.
+    <button class="btn sm" style="background:#fff;color:var(--p-red);margin-top:8px;display:block" onclick="IR.exportAll()">Export my data now</button>`:'';
+}
+async function askPersist(){
+  try{
+    if(!navigator.storage||!navigator.storage.persist)return;
+    persisted=await navigator.storage.persisted();
+    if(!persisted)persisted=await navigator.storage.persist();
+  }catch(e){}
+}
 
 /* ================= muscles ================= */
 const M={chest:'Chest',delts:'Shoulders',rear:'Rear delts',biceps:'Biceps',triceps:'Triceps',
@@ -288,8 +339,21 @@ const FOODS=[
 let P=null,PLAN=null,LOGS={},BODY=[],FUEL={},CUSTOM=[],SESS={},
     tab='today',restT=null,restLeft=0,sessT=null,editDay=null,pickFor=null,
     fq='',fres=null,fbusy=false,verdict=null,vbusy=false;
-const todayKey=()=>new Date().toISOString().slice(0,10);
+/* Dates are the phone's local calendar day (v2 used UTC, which flipped to
+   "tomorrow" around 7pm Central, mid-way through evening sessions). */
+const keyOf=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+const todayKey=()=>keyOf(new Date());
 const dow=()=>new Date().getDay();
+/* The training day on screen: an open session (started in the last 16 hours)
+   wins over the calendar, so reopening the app resumes it even past midnight. */
+const OPEN_MS=16*36e5;
+function openSessKey(){
+  return Object.keys(SESS).filter(k=>SESS[k].start&&!SESS[k].end&&Date.now()-SESS[k].start<OPEN_MS).sort().pop()||null;
+}
+let justEnded=null; // keeps a just-finished session on screen for 4h if it ran past midnight
+const recentEnd=()=>justEnded&&SESS[justEnded]&&Date.now()-SESS[justEnded].end<4*36e5?justEnded:null;
+const curKey=()=>openSessKey()||recentEnd()||todayKey();
+const curDow=()=>new Date(curKey()+'T12:00:00').getDay();
 const dayName=d=>['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d];
 const fmt=n=>Math.round(n).toLocaleString();
 const esc=s=>String(s).replace(/'/g,"\\'").replace(/"/g,'&quot;');
@@ -298,8 +362,21 @@ async function boot(){
   P=await get('ir:profile',null);PLAN=await get('ir:plan',null);LOGS=await get('ir:logs',{});
   BODY=await get('ir:body',[]);FUEL=await get('ir:fuel',{});CUSTOM=await get('ir:custom',[]);
   SESS=await get('ir:sessions',{});
+  await closeStale();
   if(!P)tab='intake';else if(!PLAN){PLAN=seedPlan(P.preset||'recomp');await set('ir:plan',PLAN);}
   render();tickSess();setInterval(tickSess,1000);
+  askPersist();
+}
+/* An open session older than the resume window was abandoned (app closed and
+   never finished). Close it at its last logged set so its work still counts. */
+async function closeStale(){
+  let changed=false;
+  Object.keys(SESS).forEach(k=>{
+    const s=SESS[k];if(!s.start||s.end||Date.now()-s.start<OPEN_MS)return;
+    const ts=Object.values(LOGS[k]||{}).flat().map(x=>x.t||0);
+    s.end=Math.max(s.start,...ts);s.auto=true;changed=true;
+  });
+  if(changed)await set('ir:sessions',SESS);
 }
 
 /* ================= targets & blocks ================= */
@@ -313,7 +390,7 @@ function computeTargets(p){
     waistGoal:Math.round(p.ht*.5*10)/10};
 }
 function blockInfo(){
-  const wks=Math.floor((new Date()-new Date(P.start+'T12:00:00'))/6048e5);
+  const wks=Math.max(0,Math.floor((new Date()-new Date(P.start+'T00:00:00'))/6048e5));
   const pos=wks%7;                       // 7-week cycle: 3 blocks of 2 + deload
   if(pos===6)return{week:7,label:'Deload week',pct:-40,deload:true,
     msg:'Cut every working weight by 40% and stop two reps short. This is what makes the next block possible.'};
@@ -324,13 +401,24 @@ function blockInfo(){
 }
 
 /* ================= session timer ================= */
-function sessRec(){return SESS[todayKey()]||null;}
-async function startSess(){
-  SESS[todayKey()]={start:Date.now(),end:null};await set('ir:sessions',SESS);render();
+function sessRec(){return SESS[curKey()]||null;}
+/* Creates the session record if it doesn't exist yet. Never resets a running one. */
+async function ensureSess(){
+  const k=curKey();
+  if(SESS[k])return false;
+  SESS[k]={start:Date.now(),end:null};await set('ir:sessions',SESS);return true;
 }
+async function startSess(){await ensureSess();render();}
+/* Finishing stamps the end time right away; the readiness tap is optional on top. */
 async function endSess(){
-  const s=sessRec();if(s&&!s.end){s.end=Date.now();await set('ir:sessions',SESS);}
-  render();window.scrollTo(0,0);
+  const k=curKey(),s=SESS[k];
+  if(s&&!s.end){s.end=Date.now();await set('ir:sessions',SESS);}
+  justEnded=k;render();window.scrollTo(0,0);
+}
+const READY=[['strong','Strong'],['normal','Normal'],['rough','Rough'],['wrecked','Wrecked']];
+async function setReady(v){
+  const s=sessRec();if(!s||!s.end)return;
+  s.ready=s.ready===v?null:v;await set('ir:sessions',SESS);render();
 }
 function tickSess(){
   const el=document.getElementById('sess');if(!el||!P)return;
@@ -451,7 +539,7 @@ function suggest(e){
 
 /* ================= today ================= */
 function vToday(){
-  const d=dow(),day=PLAN[d],k=todayKey(),log=LOGS[k]||{},f=FUEL[k]||{items:[]},s=sessRec(),b=blockInfo();
+  const d=curDow(),day=PLAN[d],k=curKey(),log=LOGS[k]||{},f=FUEL[todayKey()]||{items:[]},s=sessRec(),b=blockInfo();
   const pTot=f.items.reduce((a,x)=>a+x.p,0),pPct=Math.min(100,Math.round(pTot/P.t.prot*100));
   const totalSets=day.ex.reduce((a,e)=>a+e.s,0);
   const doneSets=Object.values(log).reduce((a,r)=>a+r.filter(x=>x.done).length,0);
@@ -464,8 +552,8 @@ function vToday(){
     const hist=historyFor(e.n,5);
     const sets=rows.map((st,j)=>`<div class="set">
       <div class="idx">${j+1}</div>
-      <input class="${st.done?'done':''}" inputmode="decimal" placeholder="lb" value="${st.w}" onchange="IR.setVal('${esc(e.n)}',${j},'w',this.value)">
-      <input class="${st.done?'done':''}" inputmode="numeric" placeholder="reps" value="${st.r}" onchange="IR.setVal('${esc(e.n)}',${j},'r',this.value)">
+      <input class="${st.done?'done':''}" inputmode="decimal" placeholder="lb" value="${st.w}" oninput="IR.setVal('${esc(e.n)}',${j},'w',this.value)">
+      <input class="${st.done?'done':''}" inputmode="numeric" placeholder="reps" value="${st.r}" oninput="IR.setVal('${esc(e.n)}',${j},'r',this.value)">
       <button class="tick ${st.done?'on':''}" onclick="IR.toggle('${esc(e.n)}',${j},${e.rest||0})" aria-label="Complete set ${j+1}">✓</button>
     </div>`).join('');
     const prev=day.ex[i-1];
@@ -492,12 +580,7 @@ function vToday(){
     <span class="pill ${day.cls}">${day.w}</span><span class="pill" style="background:var(--p-red)">${dayName(d)}</span>
     <h2 style="margin-top:8px">${day.t}</h2>
     <p class="muted" style="margin-top:4px">${day.n}</p>
-    <div class="row2" style="margin-top:12px">
-      ${!s?`<button class="btn green" onclick="IR.startSess()">Start session</button>`
-        :finished?`<button class="btn ghost" disabled>Session complete</button>`
-        :`<button class="btn red" onclick="IR.endSess()">Finish workout</button>`}
-      <button class="btn ghost" onclick="IR.editDayGo(${d})">Edit today</button>
-    </div>
+    <div class="row2" style="margin-top:12px" id="sessbtns">${sessBtns(d)}</div>
     <div class="stat" style="margin-top:10px"><span>Sets completed</span><b>${doneSets} / ${totalSets}</b></div>
     <div class="stat"><span>Volume lifted</span><b>${fmt(volume)} lb</b></div>
   </div>
@@ -506,6 +589,8 @@ function vToday(){
     <div class="stat" style="margin-top:8px"><span>Time under the bar</span><b>${Math.round((s.end-s.start)/6e4)} min</b></div>
     <div class="stat"><span>Sets</span><b>${doneSets}</b></div>
     <div class="stat"><span>Volume</span><b>${fmt(volume)} lb</b></div>
+    <div style="margin-top:12px"><label>How did that feel? One tap, or skip it</label>
+      <div class="ready">${READY.map(r=>`<button class="${s.ready===r[0]?'on':''}" onclick="IR.setReady('${r[0]}')">${r[1]}</button>`).join('')}</div></div>
     <div class="note">Now go eat. You have ${Math.max(0,P.t.prot-pTot)}g of protein left today.</div></div>`:''}
   <div class="card">${ex}</div>
   <div class="card">
@@ -515,19 +600,29 @@ function vToday(){
     <button class="btn ghost sm" style="margin-top:10px" onclick="IR.go('fuel')">Log food</button>
   </div>`;
 }
+function sessBtns(d){
+  const s=sessRec();
+  return `${!s?`<button class="btn green" onclick="IR.startSess()">Start session</button>`
+      :s.end?`<button class="btn ghost" disabled>Session complete</button>`
+      :`<button class="btn red" onclick="IR.endSess()">Finish workout</button>`}
+    <button class="btn ghost" onclick="IR.editDayGo(${d})">Edit today</button>`;
+}
+function setRows(k,name){
+  LOGS[k]=LOGS[k]||{};
+  const e=PLAN[curDow()].ex.find(x=>x.n===name)||{s:5};
+  return LOGS[k][name]=LOGS[k][name]||Array.from({length:e.s},()=>({w:'',r:'',done:false}));
+}
+/* Saves on every keystroke. The first number typed creates the session. */
 async function setVal(name,i,f,val){
-  const k=todayKey();LOGS[k]=LOGS[k]||{};
-  const e=PLAN[dow()].ex.find(x=>x.n===name)||{s:5};
-  LOGS[k][name]=LOGS[k][name]||Array.from({length:e.s},()=>({w:'',r:'',done:false}));
-  LOGS[k][name][i][f]=val;await set('ir:logs',LOGS);
+  const k=curKey(),row=setRows(k,name)[i];
+  row[f]=val;row.t=Date.now();
+  await set('ir:logs',LOGS);
+  if(await ensureSess()){const el=document.getElementById('sessbtns');if(el)el.innerHTML=sessBtns(curDow());tickSess();}
 }
 async function toggle(name,i,rest){
-  const k=todayKey();LOGS[k]=LOGS[k]||{};
-  if(!sessRec())await startSess();
-  const e=PLAN[dow()].ex.find(x=>x.n===name)||{s:5};
-  LOGS[k][name]=LOGS[k][name]||Array.from({length:e.s},()=>({w:'',r:'',done:false}));
-  const st=LOGS[k][name][i];st.done=!st.done;
-  await set('ir:logs',LOGS);render();
+  const k=curKey(),st=setRows(k,name)[i];
+  st.done=!st.done;st.t=Date.now();
+  await set('ir:logs',LOGS);await ensureSess();render();
   if(st.done&&rest)startRest(rest);
 }
 
@@ -956,7 +1051,7 @@ function exportAll(){
 }
 
 boot();
-return{go,saveIntake,importOld,setVal,toggle,addRest,stopRest,startSess,endSess,
+return{go,saveIntake,importOld,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
  fSearch,logFood,delFood,newFood,delUsual,logResult,aiLookup,photoLookup,readDay,saveBody,exportAll};
 })();
