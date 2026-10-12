@@ -106,6 +106,17 @@
   .ready button.on{background:var(--ink);color:#fff}
   .overlay{position:fixed;inset:0;background:rgba(20,23,28,.6);z-index:50;overflow-y:auto;padding:16px}
   .overlay .sheet{max-width:520px;margin:24px auto}
+  .urow{display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;text-align:left;
+    background:none;border:0;border-bottom:1px solid var(--line);padding:11px 0;font-family:'Barlow';font-size:14.5px;
+    color:var(--ink);cursor:pointer;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+  .urow:active{background:var(--concrete-2)}
+  .urow .un{display:block;font-weight:600}
+  .urow small{color:var(--ink-soft);font-family:'JetBrains Mono';font-size:11px}
+  .urow .plus{border:1.5px solid var(--ink);background:#fff;width:34px;height:34px;display:flex;align-items:center;
+    justify-content:center;font-size:18px;font-weight:700;flex:none}
+  .add.saved{border-color:var(--p-yellow);color:#8a6a00;cursor:default}
+  .toast{position:fixed;left:12px;right:12px;bottom:84px;z-index:60;background:var(--ink);color:#fff;padding:10px 12px;
+    display:flex;justify-content:space-between;align-items:center;gap:10px;font-weight:600;font-size:14px;max-width:560px;margin:0 auto}
   .photo-prev{display:block;max-width:100%;max-height:240px;margin-top:10px;border:1.5px solid var(--line)}
   .thumb{width:44px;height:44px;object-fit:cover;border:1px solid var(--line);flex:none}
   .err{color:var(--p-red);font-weight:700;font-size:14px;margin-top:8px}
@@ -123,6 +134,8 @@
   <div class="tabs" id="tabs"></div>
   <div class="wrap" id="view"></div>
   <div class="overlay hide" id="overlay"></div>
+  <div class="overlay hide" id="sheet"></div>
+  <div class="toast hide" id="toast" role="status"></div>
   <div class="timer" id="timer">
     <div><div class="eyebrow" style="color:#868D95">Rest</div><div class="t" id="tdisp">2:00</div></div>
     <div style="display:flex;gap:8px">
@@ -340,6 +353,28 @@ const FOODS=[
  {n:"Protein bar, typical",k:220,p:20},{n:"Cheeseburger, homemade",k:450,p:26},
  {n:"Grilled cheese sandwich",k:400,p:14},{n:"Frozen pizza, 1/3",k:380,p:16}
 ];
+/* Built-in "My usuals": gas station, truck stop, convenience store and break
+   room food (nutrition addendum). Typical label values; labels vary, so every
+   one is editable (hold to edit). Built-ins can't be deleted. */
+const SEED_USUALS=[
+ ['s01',"Fairlife Core Power, 26g",170,26],['s02',"Fairlife Core Power Elite, 42g",230,42],
+ ['s03',"Premier Protein shake",160,30],['s04',"Muscle Milk shake, 14 oz",160,25],
+ ['s05',"Whey, 1 scoop",120,25],['s06',"Meat stick (Chomps, Duke's)",90,10],
+ ['s07',"Slim Jim Giant",150,6],['s08',"Beef jerky, 1 oz (store brand)",80,11],
+ ['s09',"Tuna pouch, 2.6 oz",70,17],['s10',"Chicken pouch, 2.6 oz",70,15],
+ ['s11',"String cheese",80,7],['s12',"Hard-boiled eggs, 2-pack",140,12],
+ ['s13',"Greek yogurt cup, Oikos Triple Zero",90,15],['s14',"Greek yogurt cup, Oikos Pro",140,20],
+ ['s15',"Cottage cheese, 1/2 cup",110,12],['s16',"P3 protein snack pack",180,13],
+ ['s17',"Protein bar (Quest)",190,21],['s18',"Protein bar (Pure Protein)",200,20],
+ ['s19',"Peanuts, 1 oz",170,7],['s20',"Trail mix, 1 oz",140,4],['s21',"Pork rinds, 1 oz",160,17],
+ ['s22',"Roller grill hot dog with bun",290,11],['s23',"Roller grill taquito",220,8],['s24',"Corn dog",250,7],
+ ['s25',"Gas station pizza slice",320,13],['s26',"Sausage, egg & cheese biscuit",450,16],
+ ['s27',"Chicken biscuit",450,18],['s28',"Fried chicken tenders, 3 pc",350,25],
+ ['s29',"Fried chicken breast",360,35],['s30',"Chopped brisket sandwich",500,30],
+ ['s31',"Turkey & cheese sub, cooler case",350,22],['s32',"Egg salad sandwich, cooler case",400,14],
+ ['s33',"Frozen burrito, beef & bean",300,9],['s34',"Hot Pocket",290,10],['s35',"Instant ramen cup",290,6],
+ ['s36',"Chocolate milk, 16 oz",340,16],['s37',"Energy drink, 16 oz",210,0],['s38',"Banana",105,1]
+].map(([id,n,k,p])=>({id,n,k,p}));
 
 /* ================= state ================= */
 /* CUSTOM = saved foods (stored as ir:savedFoods). EXS = custom exercises (Phase 2). */
@@ -364,6 +399,7 @@ const curDow=()=>new Date(curKey()+'T12:00:00').getDay();
 const dayName=d=>['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'][d];
 const fmt=n=>Math.round(n).toLocaleString();
 const esc=s=>String(s).replace(/'/g,"\\'").replace(/"/g,'&quot;');
+const h=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); // text into HTML
 
 async function load(){
   P=await get('ir:profile',null);PLAN=await get('ir:plan',null);LOGS=await get('ir:logs',{});
@@ -371,8 +407,13 @@ async function load(){
   SESS=await get('ir:sessions',{});EXS=await get('ir:exercises',[]);SETTINGS=await get('ir:settings',{});
   META=await get('ir:meta',{});
 }
+/* Brings stored data up to the current shape. Runs after every load and import. */
+async function migrate(){
+  if(normUsuals())await set('ir:savedFoods',CUSTOM);
+}
 async function boot(){
   await load();
+  await migrate();
   await closeStale();
   if(!P)tab='intake';else if(!PLAN){PLAN=seedPlan(P.preset||'recomp');await set('ir:plan',PLAN);}
   render();tickSess();setInterval(tickSess,1000);
@@ -648,7 +689,7 @@ async function importData(text){
   const list=c=>c.map(x=>`  ${x[0]}: ${x[1]}`).join('\n');
   if(P&&!confirm(`Replace everything on this phone with this ${r.v2?'v2 ':''}backup?\n\nComing in:\n${list(counts(r.data))}\n\nOn this phone now (will be replaced):\n${list(counts(currentData()))}`))return;
   for(const n of Object.keys(KEYS))await set(KEYS[n],r.data[n]);
-  await load();await closeStale();
+  await load();await migrate();await closeStale();
   if(Object.keys(failed).length){render();return;}
   tab=P?'today':'intake';render();window.scrollTo(0,0);
   alert(`Imported.\n\n${list(counts(currentData()))}`);
@@ -947,11 +988,113 @@ function vBody(){
 }
 
 /* ================= fuel ================= */
-function allUsuals(){return CUSTOM;}
 function searchFoods(q){
   if(!q)return[];
-  const t=q.toLowerCase();
-  return FOODS.concat(CUSTOM).filter(f=>f.n.toLowerCase().includes(t)).slice(0,12);
+  const t=q.toLowerCase(),seen=new Set();
+  return CUSTOM.concat(FOODS).filter(f=>{const n=f.n.toLowerCase();if(!n.includes(t)||seen.has(n))return false;seen.add(n);return true;}).slice(0,12);
+}
+
+/* ---- saved foods ("My usuals") ---- */
+let uq='',uAll=false,uEd=null,toastT=null;
+const newId=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+/* Gives every saved food an id and merges in any built-in it's missing. */
+function normUsuals(){
+  let ch=false;
+  CUSTOM.forEach(u=>{if(!u.id){u.id=newId('u');ch=true;}});
+  SEED_USUALS.forEach(s=>{if(!CUSTOM.some(u=>u.id===s.id)){CUSTOM.push(Object.assign({builtin:true},s));ch=true;}});
+  return ch;
+}
+const findUsual=n=>CUSTOM.find(u=>u.n.toLowerCase()===String(n).trim().toLowerCase());
+/* Recently used first (up to 5), then most used, then A–Z. Searching shows every match. */
+function usualRows(){
+  const t=uq.toLowerCase().trim();
+  const byUse=(a,b)=>(b.uses||0)-(a.uses||0)||a.n.localeCompare(b.n);
+  if(t)return{recent:[],rest:CUSTOM.filter(u=>u.n.toLowerCase().includes(t)).sort(byUse)};
+  const recent=CUSTOM.filter(u=>u.last).sort((a,b)=>b.last-a.last).slice(0,5);
+  return{recent,rest:CUSTOM.filter(u=>!recent.includes(u)).sort(byUse)};
+}
+function usualRow(u){
+  return `<button class="urow" onclick="IR.uTap('${u.id}')" onpointerdown="IR.uDown('${u.id}')" onpointerup="IR.uUp()"
+    onpointercancel="IR.uUp()" onpointerleave="IR.uUp()" oncontextmenu="return IR.uHold(event,'${u.id}')">
+    <span><span class="un">${h(u.n)}</span><small>${u.k} kcal · ${u.p}g protein${u.uses?` · ${u.uses}×`:''}</small></span>
+    <span class="plus" aria-hidden="true">+</span></button>`;
+}
+function vUsuals(){
+  const {recent,rest}=usualRows(),LIMIT=8,more=!uq&&!uAll&&rest.length>LIMIT;
+  return `<div class="card">
+    <div class="eyebrow">My usuals</div><h3 style="font-size:15px;margin:4px 0 8px">Tap to log · hold to edit</h3>
+    <input id="u_q" value="${h(uq)}" placeholder="Search your usuals" oninput="IR.uSearch(this.value)">
+    ${recent.length?`<div class="eyebrow" style="margin-top:12px">Recent</div>${recent.map(usualRow).join('')}`:''}
+    ${rest.length?`${recent.length?'<div class="eyebrow" style="margin-top:12px">Most used</div>':''}${(more?rest.slice(0,LIMIT):rest).map(usualRow).join('')}`
+      :uq?`<p class="muted" style="margin-top:10px">Nothing saved matches. Add it below in two taps.</p>`:''}
+    ${more?`<button class="btn ghost sm" style="margin-top:10px" onclick="IR.uMore()">Show all ${rest.length+recent.length}</button>`:''}
+  </div>`;
+}
+function uSearch(v){
+  uq=v;const pos=document.getElementById('u_q').selectionStart;render();
+  const nb=document.getElementById('u_q');if(nb){nb.focus();nb.setSelectionRange(pos,pos);}
+}
+function uMore(){uAll=true;render();}
+/* One tap logs; a long press (held ~0.5s, or Android's press-and-hold menu) edits. */
+let hold={t:null,fired:false};
+function uDown(id){clearTimeout(hold.t);hold.fired=false;hold.t=setTimeout(()=>{hold.fired=true;uEdit(id);},550);}
+function uUp(){clearTimeout(hold.t);}
+function uHold(e,id){e.preventDefault();clearTimeout(hold.t);if(!hold.fired){hold.fired=true;uEdit(id);}return false;}
+function uTap(id){if(hold.fired){hold.fired=false;return;}logUsual(id);}
+async function logUsual(id){
+  const u=CUSTOM.find(x=>x.id===id);if(!u)return;
+  const key=todayKey();FUEL[key]=FUEL[key]||{items:[]};
+  const item={n:u.n,k:+u.k,p:+u.p},prev={uses:u.uses,last:u.last};FUEL[key].items.push(item);
+  u.uses=(u.uses||0)+1;u.last=Date.now();
+  await set('ir:fuel',FUEL);await set('ir:savedFoods',CUSTOM);
+  render();
+  toast(`Logged ${u.n}`,async()=>{const i=FUEL[key].items.lastIndexOf(item);if(i>-1)FUEL[key].items.splice(i,1);
+    Object.assign(u,prev);await set('ir:fuel',FUEL);await set('ir:savedFoods',CUSTOM);render();});
+}
+/* Adds to the list, or updates the numbers if a food with that name is already saved. */
+async function addUsual(it){
+  const u=findUsual(it.n);
+  if(u){u.k=it.k;u.p=it.p;}else CUSTOM.push({id:newId('u'),n:it.n,k:it.k,p:it.p});
+  await set('ir:savedFoods',CUSTOM);
+}
+async function saveLogged(i){
+  const it=(FUEL[todayKey()]||{items:[]}).items[i];if(!it||findUsual(it.n))return;
+  await addUsual(it);render();toast(`Saved ${it.n} to My usuals`);
+}
+/* Edit sheet */
+function uEdit(id){uEd=CUSTOM.find(x=>x.id===id)||null;drawSheet();}
+function drawSheet(){
+  const el=document.getElementById('sheet');
+  if(!uEd){el.classList.add('hide');el.innerHTML='';return;}
+  el.classList.remove('hide');
+  el.innerHTML=`<div class="card sheet" role="dialog" aria-label="Edit saved food">
+    <div class="eyebrow">Edit saved food</div>
+    <div class="field" style="margin-top:8px"><label>Name</label><input id="ue_n" value="${h(uEd.n)}"></div>
+    <div class="row2">
+      <div class="field"><label>Calories</label><input id="ue_k" type="number" inputmode="numeric" value="${uEd.k}"></div>
+      <div class="field"><label>Protein (g)</label><input id="ue_p" type="number" inputmode="numeric" value="${uEd.p}"></div></div>
+    ${uEd.builtin?`<p class="muted" style="font-size:12.5px;margin-bottom:10px">Built-in item. Fix the numbers to match your label; built-ins can't be deleted.</p>`:''}
+    <div class="row2"><button class="btn" onclick="IR.uSave()">Save</button><button class="btn ghost" onclick="IR.uCancel()">Cancel</button></div>
+    ${uEd.builtin?'':`<button class="btn red" style="margin-top:10px" onclick="IR.uDelete()">Delete from my usuals</button>`}
+  </div>`;
+}
+async function uSave(){
+  const n=document.getElementById('ue_n').value.trim();
+  if(!n){document.getElementById('ue_n').focus();return;}
+  uEd.n=n;uEd.k=+document.getElementById('ue_k').value||0;uEd.p=+document.getElementById('ue_p').value||0;
+  await set('ir:savedFoods',CUSTOM);uEd=null;drawSheet();render();
+}
+function uCancel(){uEd=null;drawSheet();}
+async function uDelete(){
+  if(!uEd||uEd.builtin)return;
+  if(!confirm(`Delete "${uEd.n}" from your usuals? Days you already logged it stay as they are.`))return;
+  CUSTOM.splice(CUSTOM.indexOf(uEd),1);await set('ir:savedFoods',CUSTOM);uEd=null;drawSheet();render();
+}
+function toast(msg,undo){
+  const el=document.getElementById('toast');clearTimeout(toastT);
+  el.innerHTML=`<span>${h(msg)}</span>${undo?'<button class="btn sm ghost" style="color:#fff;border-color:#fff">Undo</button>':''}`;
+  if(undo)el.querySelector('button').onclick=()=>{el.classList.add('hide');undo();};
+  el.classList.remove('hide');toastT=setTimeout(()=>el.classList.add('hide'),4000);
 }
 function vFuel(){
   const k=todayKey(),f=FUEL[k]||{items:[]};
@@ -967,6 +1110,8 @@ function vFuel(){
     <p class="muted" style="margin-top:10px">Hit protein every day. Calories over on a pizza day is one bad day — a week of missed protein costs you muscle.</p>
   </div>
 
+  ${vUsuals()}
+
   <div class="card">
     <div class="eyebrow">Straight answer</div>
     <h3 style="font-size:15px;margin:4px 0 8px">How did today land?</h3>
@@ -979,8 +1124,8 @@ function vFuel(){
   <div class="card">
     <div class="eyebrow">Search</div><h3 style="font-size:15px;margin:4px 0 8px">Type any food</h3>
     <input id="f_q" value="${esc(fq)}" placeholder="mcdonalds hamburger" oninput="IR.fSearch(this.value)">
-    ${hits.length?hits.map(h=>`<div class="usual"><div>${h.n}<br><small>${h.k} kcal · ${h.p}g protein</small></div>
-      <button class="add" onclick="IR.logFood('${esc(h.n)}',${h.k},${h.p})" aria-label="Log ${h.n}">+</button></div>`).join('')
+    ${hits.length?hits.map(x=>`<div class="usual"><div>${h(x.n)}<br><small>${x.k} kcal · ${x.p}g protein</small></div>
+      <button class="add" onclick="IR.logFood('${esc(x.n)}',${x.k},${x.p})" aria-label="Log ${h(x.n)}">+</button></div>`).join('')
       :fq?`<p class="muted" style="margin-top:10px">Not in the built-in list. Look it up:</p>`:''}
     ${fq&&!hits.length?`<button class="btn blue" style="margin-top:8px" onclick="IR.aiLookup()">${fbusy?'<span class="spin"></span> Looking it up':'Look up "'+esc(fq)+'"'}</button>`:''}
     ${fres?`<div style="border:1.5px solid var(--p-blue);background:#fff;padding:11px;margin-top:10px">
@@ -1018,16 +1163,11 @@ function vFuel(){
       <button class="btn ghost" onclick="IR.newFood(false)">Log once</button></div>
   </div>
 
-  ${CUSTOM.length?`<div class="card"><div class="eyebrow">My saved foods</div>
-    ${CUSTOM.map((u,i)=>`<div class="usual"><div>${u.n}<br><small>${u.k} kcal · ${u.p}g protein</small></div>
-      <div style="display:flex;gap:6px">
-        <button class="add" style="border-color:var(--line);color:var(--ink-soft)" onclick="IR.delUsual(${i})" aria-label="Remove">×</button>
-        <button class="add" onclick="IR.logFood('${esc(u.n)}',${u.k},${u.p})" aria-label="Log">+</button></div></div>`).join('')}
-  </div>`:''}
-
   ${f.items.length?`<div class="card"><div class="eyebrow">Logged today</div>
-    ${f.items.map((it,i)=>`<div class="usual">${it.img?`<img class="thumb" src="${it.img}" alt="">`:''}<div style="flex:1">${it.n}<br><small>${it.k} kcal · ${it.p}g</small></div>
-      <button class="add" onclick="IR.delFood(${i})" aria-label="Remove">−</button></div>`).join('')}</div>`:''}`;
+    ${f.items.map((it,i)=>{const sv=!!findUsual(it.n);return `<div class="usual">${it.img?`<img class="thumb" src="${it.img}" alt="">`:''}<div style="flex:1">${h(it.n)}<br><small>${it.k} kcal · ${it.p}g</small></div>
+      <div style="display:flex;gap:6px">
+        <button class="add ${sv?'saved':''}" onclick="IR.saveLogged(${i})" ${sv?'disabled aria-label="Already in My usuals"':'aria-label="Save to My usuals"'}>${sv?'★':'☆'}</button>
+        <button class="add" onclick="IR.delFood(${i})" aria-label="Remove">−</button></div></div>`;}).join('')}</div>`:''}`;
 }
 function fSearch(v){
   fq=v;fres=null;
@@ -1036,6 +1176,7 @@ function fSearch(v){
   const nb=document.getElementById('f_q');if(nb){nb.focus();nb.setSelectionRange(pos,pos);}
 }
 async function logFood(n,k,p){
+  const u=findUsual(n);if(u)return logUsual(u.id).then(()=>{fq='';fres=null;render();});
   const key=todayKey();FUEL[key]=FUEL[key]||{items:[]};
   FUEL[key].items.push({n,k:+k,p:+p});await set('ir:fuel',FUEL);
   fq='';fres=null;render();
@@ -1049,7 +1190,7 @@ async function newFood(save){
   const k=todayKey();FUEL[k]=FUEL[k]||{items:[]};
   FUEL[k].items.push(photo&&photo.img?Object.assign({img:photo.img},item):item);
   await set('ir:fuel',FUEL);
-  if(save){CUSTOM.push(item);await set('ir:savedFoods',CUSTOM);}
+  if(save)await addUsual(item);
   photoClear();
 }
 
@@ -1094,13 +1235,12 @@ function shrink(file){
   });
 }
 function photoClear(keep){if(photo&&photo.prev)URL.revokeObjectURL(photo.prev);photo=null;keep?renderKeep():render();}
-async function delUsual(i){CUSTOM.splice(i,1);await set('ir:savedFoods',CUSTOM);render();}
 async function logResult(save){
   const k=+document.getElementById('r_k').value,p=+document.getElementById('r_p').value;
   const item={n:fres.n,k,p};
   const key=todayKey();FUEL[key]=FUEL[key]||{items:[]};FUEL[key].items.push(item);
   await set('ir:fuel',FUEL);
-  if(save){CUSTOM.push(item);await set('ir:savedFoods',CUSTOM);}
+  if(save)await addUsual(item);
   fq='';fres=null;render();
 }
 
@@ -1224,7 +1364,7 @@ async function saveBody(){
 boot();
 return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpClose,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
- fSearch,logFood,delFood,newFood,delUsual,logResult,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
+ fSearch,logFood,delFood,newFood,logResult,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
 })();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 </script>
