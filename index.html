@@ -446,6 +446,7 @@ async function boot(){
   await migrate();
   await closeStale();
   if(!P)tab='intake';else if(!PLAN){PLAN=seedPlan(P.preset||'recomp');await set('ir:plan',PLAN);}
+  if(P&&PLAN&&P.pendingPreset&&!openSessKey())await applyPreset(P.pendingPreset);
   render();tickSess();setInterval(tickSess,1000);
   askPersist();
 }
@@ -495,7 +496,9 @@ async function startSess(){await ensureSess();render();}
 async function endSess(){
   const k=curKey(),s=SESS[k];
   if(s&&!s.end){s.end=Date.now();await set('ir:sessions',SESS);}
-  justEnded=k;render();window.scrollTo(0,0);
+  justEnded=k;
+  if(P.pendingPreset)await applyPreset(P.pendingPreset);
+  render();window.scrollTo(0,0);
 }
 const READY=[['strong','Strong'],['normal','Normal'],['rough','Rough'],['wrecked','Wrecked']];
 async function setReady(v){
@@ -933,7 +936,9 @@ function vPlan(){
     <select onchange="IR.switchPreset(this.value)" style="margin-top:12px">
       ${Object.keys(PRESETS).map(k=>`<option value="${k}" ${P.preset===k?'selected':''}>${PRESETS[k].label}</option>`).join('')}
     </select>
-    <p class="muted" style="margin-top:6px;font-size:12px">Changing this rebuilds the plan. Your logs are kept.</p>
+    ${P.pendingPreset?`<div class="note">Switching to ${PRESETS[P.pendingPreset].label} when today's session ends.
+      <button class="btn ghost sm" style="margin-top:6px;display:block" onclick="IR.cancelPending()">Cancel the switch</button></div>`
+      :`<p class="muted" style="margin-top:6px;font-size:12px">Switching shows exactly what changes before anything happens. Your logs are never rewritten.</p>`}
   </div>
   <div class="card"><div class="eyebrow">Before each workout</div>
     <div class="ready" style="margin-top:8px">${WARM_OPTS.map(o=>`<button class="${warmMode()===o[0]?'on':''}" onclick="IR.setWarm('${o[0]}')">${o[1]}</button>`).join('')}</div>
@@ -950,9 +955,70 @@ function vPlan(){
         <span class="num muted">${e.s>1?e.s+' × ':''}${e.r}</span></div>`).join('')}
     </div>`;}).join('');
 }
-async function switchPreset(k){
-  P.preset=k;P.t=computeTargets(P);await set('ir:profile',P);
-  PLAN=seedPlan(k);await set('ir:plan',PLAN);render();
+/* ---- body-type preset switch (2.5) ----
+   Adjusts the existing plan instead of rebuilding it: rep ranges move
+   proportionally into the new band, rest scales, ClimbMill rounds follow the
+   cardio level. Locked days are untouched. Past logs are never rewritten. */
+let psw=null; // {to, changes} while the confirm dialog is open
+const CARDIO_EX='ClimbMill HIIT';
+function presetChanges(to){
+  const A=PRESETS[P.preset],B=PRESETS[to],tA=P.t,tB=computeTargets(Object.assign({},P,{preset:to}));
+  const band=(x,lo,hi)=>Math.min(hi,Math.max(lo,x));
+  const map=x=>Math.round(B.repLow+(band(x,A.repLow,A.repHigh)-A.repLow)*(B.repHigh-B.repLow)/Math.max(1,A.repHigh-A.repLow));
+  const ex=[];
+  [0,1,2,3,4,5,6].forEach(d=>{
+    const day=PLAN[d];if(!day||day.lock)return;
+    day.ex.forEach((e,i)=>{
+      const c={d,i,n:e.n};
+      if(e.n===CARDIO_EX){const s=Math.max(1,e.s+B.cardio-A.cardio);if(s!==e.s)c.s=[e.s,s];}
+      else if(e.lo&&e.hi&&/^\d+(\s*[–-]\s*\d+)?$/.test(String(e.r).trim())){
+        let lo=map(e.lo),hi=Math.max(lo,map(e.hi));
+        if(lo!==e.lo||hi!==e.hi)c.r=[e.r,lo===hi?String(lo):`${lo}–${hi}`,lo,hi];
+      }
+      if(e.rest&&e.n!==CARDIO_EX){const rs=Math.max(15,Math.round(e.rest*B.restMult/A.restMult/5)*5);if(rs!==e.rest)c.rest=[e.rest,rs];}
+      if(c.s||c.r||c.rest)ex.push(c);
+    });
+  });
+  return{from:P.preset,to,band:[`${A.repLow}–${A.repHigh}`,`${B.repLow}–${B.repHigh}`],kcal:[tA.kcal,tB.kcal],prot:[tA.prot,tB.prot],
+    cardio:[A.cardio,B.cardio],rest:[A.restMult,B.restMult],ex,locked:[0,1,2,3,4,5,6].filter(d=>PLAN[d]&&PLAN[d].lock).length};
+}
+function switchPreset(k){
+  if(k===P.preset)return;
+  psw={to:k,changes:presetChanges(k)};drawSheet();
+}
+function vPresetSheet(){
+  const c=psw.changes,A=PRESETS[c.from],B=PRESETS[c.to],arrow=(a,b)=>`<b>${a} → ${b}</b>`,open=!!openSessKey();
+  const rows=c.ex.map(x=>`<div class="stat" style="font-size:12.5px"><span>${dayName(x.d).slice(0,3)} · ${h(x.n)}</span>
+    <b style="font-size:11.5px">${[x.r?`${h(x.r[0])} → ${x.r[1]} reps`:'',x.s?`${x.s[0]} → ${x.s[1]} rounds`:'',x.rest?`${x.rest[0]}s → ${x.rest[1]}s rest`:''].filter(Boolean).join(' · ')}</b></div>`).join('');
+  return `<div class="card sheet" role="dialog" aria-label="Switch body-type preset">
+    <div class="eyebrow">Switch preset</div><h2>${A.label} → ${B.label}</h2>
+    <p class="muted" style="margin:6px 0 10px;font-size:13px">${B.truth}</p>
+    <div class="stat"><span>Rep ranges</span>${arrow(c.band[0],c.band[1])}</div>
+    <div class="stat"><span>Daily calories</span>${arrow(fmt(c.kcal[0]),fmt(c.kcal[1]))}</div>
+    <div class="stat"><span>Daily protein</span>${arrow(c.prot[0]+' g',c.prot[1]+' g')}</div>
+    <div class="stat"><span>Cardio volume</span>${arrow(`level ${c.cardio[0]}`,`level ${c.cardio[1]}`)}</div>
+    <div class="stat"><span>Rest times</span>${arrow('×'+c.rest[0],'×'+c.rest[1])}</div>
+    <details class="cues" ${c.ex.length?'':'hidden'}><summary>Every exercise that changes (${c.ex.length})</summary><div style="padding:4px 10px">${rows}</div></details>
+    <p class="muted" style="font-size:12.5px;margin-top:10px">Your exercises, order and supersets stay as they are.${c.locked?` ${c.locked} locked day${c.locked>1?'s':''} won't change.`:''}
+      ${open?" You're mid-session, so this applies when you finish today's workout.":' Applies from your next session.'} Past logs are never rewritten.</p>
+    <div class="row2" style="margin-top:12px"><button class="btn" onclick="IR.presetConfirm()">Switch</button>
+      <button class="btn ghost" onclick="IR.presetCancel()">Cancel</button></div></div>`;
+}
+async function presetConfirm(){
+  const to=psw.to;psw=null;drawSheet();
+  if(openSessKey()){P.pendingPreset=to;await set('ir:profile',P);render();toast(`Switching to ${PRESETS[to].label} after this session`);return;}
+  await applyPreset(to);
+}
+function presetCancel(){psw=null;drawSheet();render();}
+async function cancelPending(){delete P.pendingPreset;await set('ir:profile',P);render();}
+async function applyPreset(to){
+  const c=presetChanges(to);
+  c.ex.forEach(x=>{const e=PLAN[x.d].ex[x.i];
+    if(x.r){e.r=x.r[1];e.lo=x.r[2];e.hi=x.r[3];}if(x.s)e.s=x.s[1];if(x.rest)e.rest=x.rest[1];});
+  (SETTINGS.presetLog=SETTINGS.presetLog||[]).push({d:todayKey(),from:P.preset,to});
+  P.preset=to;delete P.pendingPreset;P.t=computeTargets(P);
+  await set('ir:plan',PLAN);await set('ir:settings',SETTINGS);await set('ir:profile',P);
+  render();toast(`Now on ${PRESETS[to].label}`);
 }
 
 /* ================= day editor ================= */
@@ -1242,8 +1308,9 @@ async function saveLogged(i){
 function uEdit(id){uEd=CUSTOM.find(x=>x.id===id)||null;drawSheet();}
 function drawSheet(){
   const el=document.getElementById('sheet');
-  if(!uEd){el.classList.add('hide');el.innerHTML='';return;}
+  if(!uEd&&!psw){el.classList.add('hide');el.innerHTML='';return;}
   el.classList.remove('hide');
+  if(psw){el.innerHTML=vPresetSheet();return;}
   el.innerHTML=`<div class="card sheet" role="dialog" aria-label="Edit saved food">
     <div class="eyebrow">Edit saved food</div>
     <div class="field" style="margin-top:8px"><label>Name</label><input id="ue_n" value="${h(uEd.n)}"></div>
@@ -1489,8 +1556,8 @@ function vProgress(){
       <div class="field"><label>Waist (in)</label><input id="b_wa" type="number" inputmode="decimal" placeholder="${last.wa}"></div></div>
     <button class="btn" onclick="IR.saveBody()">Save this week</button>
     <p class="muted" style="margin-top:10px">Scale flat + waist dropping is a successful recomp. That's the pattern, not a falling scale.</p></div>
-  ${chart('Waist (in)',BODY.map(b=>b.wa),P.t.waistGoal)}
-  ${chart('Weight (lb)',BODY.map(b=>b.wt),null)}
+  ${chart('Waist (in)',BODY.map(b=>b.wa),P.t.waistGoal,true)}
+  ${chart('Weight (lb)',BODY.map(b=>b.wt),null,true)}
   <div class="card"><div class="eyebrow">Training time</div>
     <div style="margin-top:8px">
       <div class="stat"><span>Sessions this week</span><b>${last7.length}</b></div>
@@ -1514,7 +1581,17 @@ function vProgress(){
     <button class="btn" style="margin-top:12px" onclick="IR.exportAll()">Copy all my data</button>
     <div style="margin-top:16px"><label>Restore a backup (replaces what's on this phone)</label>${importUI('p_imp')}</div></div>`;
 }
-function chart(title,vals,goal){
+/* Preset switches drawn on body charts: a dashed line before the first
+   check-in on or after the switch date (or at the right edge if none yet). */
+function switchMarks(xs,W,H){
+  return (SETTINGS.presetLog||[]).map(s=>{
+    const i=BODY.findIndex(b=>b.d>=s.d);if(i===0)return '';
+    const x=i<0?W-12:(xs[i-1]+xs[i])/2;
+    return `<line x1="${x}" y1="6" x2="${x}" y2="${H-14}" stroke="var(--p-blue)" stroke-dasharray="3 3" stroke-width="1.5"/>
+      <text x="${x+3}" y="14" font-size="8.5" font-family="JetBrains Mono" fill="var(--p-blue)">${h(PRESETS[s.to].label.split(' ')[0])} ${s.d.slice(5)}</text>`;
+  }).join('');
+}
+function chart(title,vals,goal,marks){
   if(vals.length<2)return `<div class="card"><div class="eyebrow">${title}</div>
     <p class="muted" style="margin-top:6px">Two entries and a trend line shows up here.</p></div>`;
   const mn=Math.min(...vals,goal||1e9)-1,mx=Math.max(...vals)+1,W=300,H=110;
@@ -1525,6 +1602,7 @@ function chart(title,vals,goal){
     <svg viewBox="0 0 ${W} ${H}" style="width:100%;margin-top:8px">
       ${goal?`<line x1="20" y1="${gy}" x2="${W-10}" y2="${gy}" stroke="var(--p-green)" stroke-dasharray="4 3" stroke-width="1.5"/>
         <text x="${W-12}" y="${gy-4}" text-anchor="end" font-size="9" font-family="JetBrains Mono" fill="var(--p-green)">target ${goal}</text>`:''}
+      ${marks?switchMarks(pts.map(p=>p[0]),W,H):''}
       <path d="${line}" fill="none" stroke="var(--ink)" stroke-width="2.5"/>
       ${pts.map(p=>`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.5" fill="var(--p-red)"/>`).join('')}
       <text x="20" y="${H-1}" font-size="9" font-family="JetBrains Mono" fill="var(--ink-soft)">${vals[0]}</text>
@@ -1541,7 +1619,7 @@ async function saveBody(){
 boot();
 return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpClose,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
- xSearch,newExGo,saveNewEx,rmExtra,tpToggle,setTempo,setTempoPlan,setWarm,warmMark,
+ xSearch,newExGo,saveNewEx,rmExtra,tpToggle,setTempo,setTempoPlan,setWarm,warmMark,presetConfirm,presetCancel,cancelPending,
  fSearch,logFood,delFood,newFood,logResult,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
 })();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
