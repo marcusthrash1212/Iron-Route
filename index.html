@@ -114,6 +114,10 @@
   .urow small{color:var(--ink-soft);font-family:'JetBrains Mono';font-size:11px}
   .urow .plus{border:1.5px solid var(--ink);background:#fff;width:34px;height:34px;display:flex;align-items:center;
     justify-content:center;font-size:18px;font-weight:700;flex:none}
+  .tbtn{background:none;border:0;padding:4px 0;text-align:left;cursor:pointer;display:block}
+  .set.withtp{grid-template-columns:24px 1.1fr 1fr 1fr 40px}
+  #ir .set input.tpin{font-size:13px;padding:8px 2px}
+  #ir input.bad{border-color:var(--p-red);background:#FBE9E8}
   .mgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
   .mchk{display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-size:14px;color:var(--ink);
     font-weight:500;border:1.5px solid var(--line);background:#fff;padding:9px 10px;margin:0;cursor:pointer}
@@ -282,6 +286,16 @@ const LIB=[
 const findEx=n=>LIB.find(x=>x.n===n)||EXS.find(x=>x.n===n)||{n,m:[],rest:60,c:null};
 const CATS=[...new Set(LIB.map(x=>x.cat))];
 const EQUIP=['Machine','Cable','Barbell','Dumbbell','Bodyweight','Cardio machine','Other'];
+/* Tempo: four parts — down, bottom pause, up, top pause — digits or X for explosive.
+   Blank means no prescribed tempo. */
+const TEMPO_RE=/^[0-9X]-[0-9X]-[0-9X]-[0-9X]$/;
+const normTempo=v=>String(v||'').trim().toUpperCase().replace(/\s+/g,'').replace(/[–—.,/]/g,'-');
+const tempoOk=v=>{const t=normTempo(v);return !t||TEMPO_RE.test(t);};
+function tempoText(t){
+  if(!TEMPO_RE.test(t))return h(t);
+  const p=t.split('-'),s=(x,w)=>x==='X'?`explosive ${w}`:`${x}s ${w}`;
+  return `${t} · ${s(p[0],'down')}, ${s(p[1],'pause')}, ${s(p[2],'up')}, ${s(p[3],'at top')}`;
+}
 
 /* ================= body-type presets ================= */
 const PRESETS={
@@ -300,7 +314,7 @@ const PRESETS={
 function seedPlan(preset){
   const P=PRESETS[preset], r=(lo,hi)=>`${Math.max(P.repLow,lo)}–${Math.min(P.repHigh,hi)}`;
   const mk=(n,s,lo,hi,extra)=>Object.assign({n,s,r:r(lo,hi),lo:Math.max(P.repLow,lo),hi:Math.min(P.repHigh,hi),
-    rest:Math.round(findEx(n).rest*P.restMult),tempo:'3-0-1'},extra||{});
+    rest:Math.round(findEx(n).rest*P.restMult),tempo:'3-0-1-0'},extra||{});
   const heavySets=preset==='bulk'?4:3;
   return {
    0:{t:'Legs — Heavy',w:'AM',cls:'am',n:'Fresh day. Hardest session of the week — treat it that way.',ex:[
@@ -418,6 +432,12 @@ async function load(){
 /* Brings stored data up to the current shape. Runs after every load and import. */
 async function migrate(){
   if(normUsuals())await set('ir:savedFoods',CUSTOM);
+  /* v2 tempos were three parts (down-pause-up): add a 0s top pause. */
+  const up=e=>{if(e&&/^[0-9X]-[0-9X]-[0-9X]$/i.test(e.tempo||'')){e.tempo=e.tempo.toUpperCase()+'-0';return true;}return false;};
+  const each=(list,f)=>(list||[]).reduce((a,e)=>f(e)||a,false);
+  if(PLAN&&Object.values(PLAN).reduce((a,day)=>each(day&&day.ex,up)||a,false))await set('ir:plan',PLAN);
+  if(Object.values(XTRA).reduce((a,l)=>each(l,up)||a,false))await set('ir:extras',XTRA);
+  if(each(EXS,up))await set('ir:exercises',EXS);
 }
 async function boot(){
   await load();
@@ -738,8 +758,11 @@ function vToday(){
     const rows=log[e.n]||Array.from({length:e.s},()=>({w:'',r:'',done:false}));
     const sg=suggest(e),q=encodeURIComponent(e.n+' proper form');
     const hist=historyFor(e.n,5);
-    const sets=rows.map((st,j)=>`<div class="set">
+    const tpo=tpOpen.has(e.n);
+    const sets=rows.map((st,j)=>`<div class="set ${tpo?'withtp':''}">
       <div class="idx">${j+1}</div>
+      ${tpo?`<input class="tpin" value="${h(st.tp!==undefined?st.tp:(e.tempo||''))}" placeholder="none" autocapitalize="characters"
+        aria-label="Tempo for set ${j+1}" oninput="IR.setTempo('${esc(e.n)}',${j},this)">`:''}
       <input class="${st.done?'done':''}" inputmode="decimal" placeholder="lb" value="${st.w}" oninput="IR.setVal('${esc(e.n)}',${j},'w',this.value)">
       <input class="${st.done?'done':''}" inputmode="numeric" placeholder="reps" value="${st.r}" oninput="IR.setVal('${esc(e.n)}',${j},'r',this.value)">
       <button class="tick ${st.done?'on':''}" onclick="IR.toggle('${esc(e.n)}',${j},${e.rest||0})" aria-label="Complete set ${j+1}">✓</button>
@@ -750,7 +773,7 @@ function vToday(){
       ${extra?`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span class="pill grp">Added today</span>
         ${rows.some(r=>r.done)?'':`<button class="btn ghost sm" style="padding:4px 9px" onclick="IR.rmExtra(${i-nPlan})">Remove</button>`}</div>`:''}
       <div class="ex-h"><div class="ex-n">${h(e.n)}${lib.custom?' <span class="pill" style="font-size:8.5px;padding:2px 5px">Custom</span>':''}</div><div class="ex-t num">${e.s} × ${h(e.r)}</div></div>
-      ${e.tempo?`<div class="tempo">Tempo ${e.tempo} · ${e.tempo.split('-')[0]}s down, ${e.tempo.split('-')[1]}s pause, ${e.tempo.split('-')[2]}s up</div>`:''}
+      ${e.rest||e.tempo?`<button class="tempo tbtn" onclick="IR.tpToggle('${esc(e.n)}')">${e.tempo?'Tempo '+tempoText(e.tempo):'No set tempo'} · <u>${tpOpen.has(e.n)?'done':'per set'}</u></button>`:''}
       <div class="target">${sg.txt}</div>
       <div class="sets">${sets}</div>
       <details class="cues"><summary>How to do it${lib.q?' <span class="qr">QR on the machine</span>':''}</summary>
@@ -815,6 +838,16 @@ async function setVal(name,i,f,val){
   row[f]=val;row.t=Date.now();
   await set('ir:logs',LOGS);
   if(await ensureSess()){const el=document.getElementById('sessbtns');if(el)el.innerHTML=sessBtns(curDow());tickSess();}
+}
+/* Per-set tempo: starts as the exercise's tempo; clearing it means no tempo for that set. */
+const tpOpen=new Set();
+function tpToggle(n){tpOpen.has(n)?tpOpen.delete(n):tpOpen.add(n);render();}
+async function setTempo(name,i,el){
+  const v=normTempo(el.value),ok=tempoOk(v);
+  el.classList.toggle('bad',!ok);
+  if(!ok)return;
+  const row=setRows(curKey(),name)[i];row.tp=v;row.t=Date.now();
+  await set('ir:logs',LOGS);
 }
 async function toggle(name,i,rest){
   const k=curKey(),st=setRows(k,name)[i];
@@ -898,8 +931,9 @@ function vEdit(){
         <div><label>Reps</label><input value="${e.r}" onchange="IR.setEx(${i},'r',this.value)"></div>
         <div><label>Rest (s)</label><input type="number" inputmode="numeric" value="${e.rest||0}" onchange="IR.setEx(${i},'rest',this.value)"></div>
       </div>
-      <div style="margin-top:8px"><label>Tempo — down / pause / up (seconds)</label>
-        <input value="${e.tempo||''}" placeholder="3-0-1" onchange="IR.setEx(${i},'tempo',this.value)"></div>
+      <div style="margin-top:8px"><label>Tempo — down / pause / up / top pause (s), X = explosive, blank = none</label>
+        <input value="${h(e.tempo||'')}" placeholder="3-1-1-0" autocapitalize="characters" oninput="IR.setTempoPlan(${i},this)">
+        <div class="err hide" style="font-size:12.5px">Use four parts like 3-1-1-0 (digits or X), or leave it blank. Not saved yet.</div></div>
     </div>`).join('')}
     <button class="btn" style="margin-top:12px" onclick="IR.pickGo(${d})">Add an exercise</button>
   </div>
@@ -916,6 +950,12 @@ async function setEx(i,f,v){
   e[f]=(f==='s'||f==='rest')?+v:v;
   if(f==='r'){const m=String(v).match(/(\d+)\D+(\d+)/);if(m){e.lo=+m[1];e.hi=+m[2];}else{const n=+String(v).match(/\d+/);if(n){e.lo=n;e.hi=n;}}}
   await set('ir:plan',PLAN);
+}
+/* Saves only a valid tempo (or blank); otherwise flags the field and keeps the old value. */
+async function setTempoPlan(i,el){
+  const v=normTempo(el.value),ok=tempoOk(v);
+  el.classList.toggle('bad',!ok);el.nextElementSibling.classList.toggle('hide',ok);
+  if(ok){PLAN[editDay].ex[i].tempo=v;await set('ir:plan',PLAN);}
 }
 async function moveEx(i,dir){
   const a=PLAN[editDay].ex;const j=i+dir;if(j<0||j>=a.length)return;
@@ -958,7 +998,7 @@ function xSearch(v){
 }
 function planEntry(n){
   const lib=findEx(n),lo=lib.lo||10,hi=lib.hi||12;
-  return{n,s:3,r:lo===hi?String(lo):`${lo}–${hi}`,lo,hi,rest:lib.rest,tempo:lib.tempo!==undefined?lib.tempo:(lib.rest?'3-0-1':'')};
+  return{n,s:3,r:lo===hi?String(lo):`${lo}–${hi}`,lo,hi,rest:lib.rest,tempo:lib.tempo!==undefined?lib.tempo:(lib.rest?'3-0-1-0':'')};
 }
 async function addEx(n){
   if(pickFor==='sess'){
@@ -991,9 +1031,6 @@ function vNewEx(){
     <button class="btn" onclick="IR.saveNewEx()">Save and add</button>
     <button class="btn ghost" style="margin-top:8px" onclick="IR.go('pick')">Cancel</button></div>`;
 }
-/* Tempo: four parts (down-pause-up-pause), digits or X for explosive. Blank = none. */
-const TEMPO_RE=/^[0-9X]-[0-9X]-[0-9X]-[0-9X]$/;
-const normTempo=v=>String(v||'').trim().toUpperCase().replace(/\s+/g,'').replace(/[–—.,/]/g,'-');
 async function saveNewEx(){
   const g=id=>document.getElementById(id).value;
   const n=g('x_n').trim().replace(/[\\]/g,''),eq=g('x_eq'),lo=Math.round(+g('x_lo')),hi=Math.round(+g('x_hi')),rest=Math.max(0,Math.round(+g('x_rest')||0)),tp=normTempo(g('x_tp'));
@@ -1445,7 +1482,7 @@ async function saveBody(){
 boot();
 return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpClose,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
- xSearch,newExGo,saveNewEx,rmExtra,
+ xSearch,newExGo,saveNewEx,rmExtra,tpToggle,setTempo,setTempoPlan,
  fSearch,logFood,delFood,newFood,logResult,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
 })();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
