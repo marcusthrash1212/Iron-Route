@@ -1,5 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#14171C">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Iron Route</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
 <link href="https://fonts.googleapis.com/css2?family=Anton&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
+  html,body{margin:0;background:#E4E6E1}
   :root{--concrete:#E4E6E1;--concrete-2:#D3D6D0;--ink:#14171C;--ink-soft:#5A6068;--line:#B9BDB6;
     --p-none:#C2C6BF;--p-green:#1E9E5A;--p-yellow:#E8B400;--p-blue:#1F5FA9;--p-red:#C7302B;--card:#F2F3F0;}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
@@ -89,6 +101,8 @@
   @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
   .hide{display:none}
 </style>
+</head>
+<body>
 
 <div id="ir">
   <div class="top">
@@ -946,4 +960,7 @@ return{go,saveIntake,importOld,setVal,toggle,addRest,stopRest,startSess,endSess,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
  fSearch,logFood,delFood,newFood,delUsual,logResult,aiLookup,photoLookup,readDay,saveBody,exportAll};
 })();
+if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 </script>
+</body>
+</html>
