@@ -118,6 +118,8 @@
   .lockpick button{text-align:left;border:1.5px solid var(--line);background:#fff;padding:10px 12px;cursor:pointer;font-family:'Barlow';color:var(--ink)}
   .lockpick button b{display:block;font-size:14px}.lockpick button span{font-size:12.5px;color:var(--ink-soft)}
   .lockpick button.on{border-color:var(--ink);border-width:2.5px;background:#E9EBE6}
+  .lockpick button em{display:inline-block;margin-top:5px;font-style:normal;font-size:9.5px;letter-spacing:.1em;
+    text-transform:uppercase;font-weight:700;background:var(--p-green);color:#fff;padding:2px 6px}
   .warm{border:1.5px dashed var(--ink-soft);padding:10px 12px;margin-bottom:6px;background:#fff}
   .warm ol{margin:8px 0 10px;padding-left:20px}.warm li{font-size:13.5px;margin-bottom:5px}
   .tbtn{background:none;border:0;padding:4px 0;text-align:left;cursor:pointer;display:block}
@@ -738,8 +740,14 @@ function historyFor(name,limit){
   return days.slice(0,limit||5).map(d=>({d,sets:LOGS[d][name].filter(s=>s.done)}));
 }
 function suggest(e){
-  const h=historyFor(e.n,1);
+  // Previous sessions only: today's ticked sets aren't "last time".
+  const h=historyFor(e.n,2).filter(x=>x.d!==curKey()).slice(0,1);
   if(!h.length)return{txt:e.w?`Planned: ${e.w} lb × ${e.r}. Adjust if it feels off, and log it.`:'First time — pick a weight you could do two more reps with, and log it.',cls:''};
+  /* A missed-rep adjustment last session is this session's starting point. */
+  const a=(SESS[h[0].d]||{}).adj&&SESS[h[0].d].adj[e.n];
+  if(a&&!blockInfo().deload)return{txt:a.choice==='lower'
+    ?`Start at ${a.w} lb × ${a.lo} — last time's adjusted weight.`
+    :`Start at ${a.w?a.w+' lb':'the same weight'}, aim for ${a.lo}–${a.hi} reps — last time's adjusted target.`,cls:''};
   const sets=h[0].sets.filter(s=>+s.w>0);
   if(!sets.length)return{txt:'No weight logged last time. Enter one today so the app can progress you.',cls:''};
   const top=sets.reduce((a,b)=>+b.w>+a.w?b:a);
@@ -765,7 +773,7 @@ function vToday(){
   let ex=list.map((e,i)=>{
     const lib=findEx(e.n);
     const rows=log[e.n]||Array.from({length:e.s},()=>({w:'',r:'',done:false}));
-    const sg=suggest(e),q=encodeURIComponent(e.n+' proper form');
+    const sg=suggest(e),q=encodeURIComponent(e.n+' proper form'),adj=s&&s.adj&&s.adj[e.n];
     const hist=historyFor(e.n,5);
     const tpo=tpOpen.has(e.n);
     const sets=rows.map((st,j)=>`<div class="set ${tpo?'withtp':''}">
@@ -783,7 +791,7 @@ function vToday(){
         ${rows.some(r=>r.done)?'':`<button class="btn ghost sm" style="padding:4px 9px" onclick="IR.rmExtra('${esc(e.n)}')">Remove</button>`}</div>`:''}
       <div class="ex-h"><div class="ex-n">${h(e.n)}${lib.custom?' <span class="pill" style="font-size:8.5px;padding:2px 5px">Custom</span>':''}</div><div class="ex-t num">${e.s} × ${h(e.r)}</div></div>
       ${e.rest||e.tempo?`<button class="tempo tbtn" onclick="IR.tpToggle('${esc(e.n)}')">${e.tempo?'Tempo '+tempoText(e.tempo):'No set tempo'} · <u>${tpOpen.has(e.n)?'done':'per set'}</u></button>`:''}
-      <div class="target">${sg.txt}</div>
+      <div class="target">${adj?adjText(adj,e.n):sg.txt}</div>
       <div class="sets">${sets}</div>
       <details class="cues"><summary>How to do it${lib.q?' <span class="qr">QR on the machine</span>':''}</summary>
         ${lib.c?`<ul>${lib.c.map(x=>`<li>${x}</li>`).join('')}</ul>`:''}
@@ -918,6 +926,99 @@ async function toggle(name,i,rest){
   st.done=!st.done;st.t=Date.now();
   await set('ir:logs',LOGS);await ensureSess();render();
   if(st.done&&rest)startRest(rest);
+  if(st.done)checkMiss(name,i);
+}
+
+/* ================= missed-rep adjustment (Phase 3) =================
+   A completed set below the bottom of its rep range asks: lower the weight
+   (Epley estimate, rounded DOWN to the equipment's step) or keep the weight
+   and aim for the reps achieved up to +2. The choice is stored on the session
+   (SESS[k].adj[name]), applies to the rest of today's sets, and is next
+   session's starting point. Readiness rules (rough = fewer sets) are separate. */
+const STEPS_DEFAULT={machine:10,cable:5,bar:45,plate:2.5};
+const steps=()=>Object.assign({},STEPS_DEFAULT,SETTINGS.steps||{});
+/* Equipment for built-ins is inferred; custom exercises carry their own. */
+function eqOf(x){
+  if(x.eq)return x.eq;
+  if(['Cardio','Mobility'].includes(x.cat))return 'Cardio machine';
+  if(/^(Push-up|Pull-up|Dips|Plank|Hanging Leg Raise)$/.test(x.n))return 'Bodyweight';
+  if(x.q)return 'Machine';
+  if(/Barbell|Romanian Deadlift|Good Morning|Hip Thrust/.test(x.n))return 'Barbell';
+  if(/\bDB\b|Dumbbell|Goblet|Hammer Curl|Bulgarian|Walking Lunge|Rear Delt Fly/.test(x.n))return 'Dumbbell';
+  if(/Cable|Pushdown|Face Pull|Straight-Arm/.test(x.n))return 'Cable';
+  return 'Other';
+}
+/* Rounds DOWN to a weight the equipment can actually make. */
+function roundDown(w,eq){
+  const s=steps();
+  if(eq==='Barbell'){const pair=2*s.plate;return w<=s.bar?s.bar:s.bar+Math.floor((w-s.bar)/pair+1e-9)*pair;}
+  const step=eq==='Machine'?s.machine:eq==='Cable'?s.cable:5;
+  return Math.max(step,Math.floor(w/step+1e-9)*step);
+}
+/* Plates per side for a barbell weight, biggest first. */
+function plateMath(w){
+  const s=steps();let side=(w-s.bar)/2;if(side<=0)return `just the ${s.bar} lb bar`;
+  const out=[];[45,35,25,10,5,2.5,1.25].filter(p=>p>=s.plate).forEach(p=>{while(side>=p-1e-9){out.push(p);side-=p;}});
+  return `${s.bar} bar + ${out.join(', ')} per side`;
+}
+const epley=(w,r)=>w*(1+r/30);
+function missPlan(e,row){
+  const x=findEx(e.n),eq=eqOf(x),w=+row.w,r=+row.r,adj=(sessRec()||{}).adj?.[e.n];
+  const target=adj?adj.lo:+e.lo;
+  if(eq==='Cardio machine'||!target||!(r>=1)||r>=target)return null;
+  const miss=target-r,keep={w,lo:r,hi:r+2};
+  let lower=null;
+  if(w>0&&eq!=='Bodyweight'){
+    const nw=roundDown(epley(w,r)/(1+target/30),eq);
+    if(nw<w)lower={w:nw,lo:target,hi:adj?adj.hi:(+e.hi||target),plates:eq==='Barbell'?plateMath(nw):''};
+  }
+  return{eq,w,r,target,miss,lower,keep,def:lower&&miss>=3?'lower':'keep'};
+}
+let missAsk=null; // {name, i, plan} while the prompt is open
+function checkMiss(name,i){
+  const e=sessEx(curKey(),curDow()).find(x=>x.n===name);if(!e)return;
+  const plan=missPlan(e,setRows(curKey(),name)[i]);
+  if(plan){missAsk={name,i,plan};drawSheet();}
+}
+function vMissSheet(){
+  const {name,plan:p}=missAsk;
+  const opt=(id,title,detail)=>`<button class="${p.def===id?'on':''}" onclick="IR.missChoose('${id}')">
+    <b>${title}</b><span>${detail}</span>${p.def===id?'<em>Recommended</em>':''}</button>`;
+  return `<div class="card sheet" role="dialog" aria-label="Missed reps">
+    <div class="eyebrow">${h(name)} · ${p.w?p.w+' lb × ':''}${p.r} of ${p.target}</div>
+    <h3 style="font-size:17px;margin:6px 0 10px">Would you like to lower the weight for more reps, or lower the reps and keep the same weight?</h3>
+    <div class="lockpick">
+      ${p.lower?opt('lower',`Lower the weight → ${p.lower.w} lb × ${p.target}`,`From your ${p.w} × ${p.r}, rounded down to what the ${p.eq.toLowerCase()} can load.${p.lower.plates?' Load: '+p.lower.plates+'.':''}`):''}
+      ${opt('keep',`Keep ${p.w?p.w+' lb':'it'} → aim for ${p.keep.lo}–${p.keep.hi} reps`,`Same weight, a target you can hit today.`)}
+    </div>
+    <p class="muted" style="font-size:12.5px;margin-top:10px">Applies to your remaining sets of this exercise today and becomes your starting point next time.</p>
+    <button class="btn ghost" style="margin-top:10px" onclick="IR.missClose()">Not now</button></div>`;
+}
+async function missChoose(choice){
+  const {name,plan:p}=missAsk;missAsk=null;drawSheet();
+  const k=curKey(),s=sessRec();if(!s)return;
+  const rows=setRows(k,name),prev={rows:JSON.parse(JSON.stringify(rows)),adj:s.adj&&s.adj[name]?Object.assign({},s.adj[name]):null};
+  const pick=choice==='lower'?p.lower:p.keep;
+  (s.adj=s.adj||{})[name]={choice,w:pick.w,lo:pick.lo,hi:pick.hi,from:{w:p.w,r:p.r,target:p.target},at:Date.now()};
+  rows.forEach(rw=>{if(!rw.done&&pick.w)rw.w=String(pick.w);});
+  await set('ir:sessions',SESS);await set('ir:logs',LOGS);render();
+  toast(choice==='lower'?`${name}: ${pick.w} lb × ${pick.lo} for the rest`:`${name}: aim for ${pick.lo}–${pick.hi}`,async()=>{
+    rows.splice(0,rows.length,...prev.rows);
+    if(prev.adj)s.adj[name]=prev.adj;else delete s.adj[name];
+    await set('ir:sessions',SESS);await set('ir:logs',LOGS);render();
+  });
+}
+function missClose(){missAsk=null;drawSheet();}
+/* Target line for an exercise adjusted today. */
+function adjText(a,name){
+  const pl=eqOf(findEx(name))==='Barbell'&&a.choice==='lower'?` (${plateMath(a.w)})`:'';
+  return a.choice==='lower'?`Adjusted today: ${a.w} lb × ${a.lo}${pl}. You got ${a.from.w} × ${a.from.r}.`
+    :`Adjusted today: ${a.w?a.w+' lb, ':''}aim for ${a.lo}–${a.hi} reps. You got ${a.from.r} of ${a.from.target}.`;
+}
+/* "Your gym's weight steps" setting (Plan tab). */
+async function setStep(f,v){
+  const n=+v;if(!(n>0))return render();
+  SETTINGS.steps=Object.assign({},SETTINGS.steps||{},{[f]:n});await set('ir:settings',SETTINGS);
 }
 
 /* ================= rest timer ================= */
@@ -949,6 +1050,11 @@ function vPlan(){
   <div class="card"><div class="eyebrow">Before each workout</div>
     <div class="ready" style="margin-top:8px">${WARM_OPTS.map(o=>`<button class="${warmMode()===o[0]?'on':''}" onclick="IR.setWarm('${o[0]}')">${o[1]}</button>`).join('')}</div>
     <p class="muted" style="margin-top:8px;font-size:12.5px">Built from each day's muscles and shown above the first exercise. One tap skips it. Warm-up sets never count toward your weekly volume.</p>
+  </div>
+  <div class="card"><div class="eyebrow">Your gym's weight steps</div>
+    <p class="muted" style="margin:4px 0 10px;font-size:12.5px">Used when a missed set suggests a lighter weight, so it's always one your equipment can load. Dumbbells go in 5 lb jumps.</p>
+    <div class="row2">${[['machine','Machine stack step'],['cable','Cable stack step'],['bar','Barbell weight'],['plate','Smallest plate']].map(([f,l])=>
+      `<div class="field"><label>${l} (lb)</label><input type="number" inputmode="decimal" value="${steps()[f]}" onchange="IR.setStep('${f}',this.value)"></div>`).join('')}</div>
   </div>${vTplList()}`+[0,1,2,3,4,5,6].map(d=>{
     const p=PLAN[d];
     return `<div class="card" ${d===dow()?'style="border-color:var(--p-red);border-width:2px"':''}>
@@ -1401,8 +1507,9 @@ async function saveLogged(i){
 function uEdit(id){uEd=CUSTOM.find(x=>x.id===id)||null;drawSheet();}
 function drawSheet(){
   const el=document.getElementById('sheet');
-  if(!uEd&&!psw){el.classList.add('hide');el.innerHTML='';return;}
+  if(!uEd&&!psw&&!missAsk){el.classList.add('hide');el.innerHTML='';return;}
   el.classList.remove('hide');
+  if(missAsk){el.innerHTML=vMissSheet();return;}
   if(psw){el.innerHTML=vPresetSheet();return;}
   el.innerHTML=`<div class="card sheet" role="dialog" aria-label="Edit saved food">
     <div class="eyebrow">Edit saved food</div>
@@ -1713,7 +1820,7 @@ boot();
 return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpClose,setVal,toggle,addRest,stopRest,startSess,endSess,setReady,
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
  xSearch,newExGo,saveNewEx,rmExtra,tpToggle,setTempo,setTempoPlan,setWarm,warmMark,presetConfirm,presetCancel,cancelPending,
- tplNew,tplOpen,tplDup,tplSet,tplDelete,tplSlot,
+ tplNew,tplOpen,tplDup,tplSet,tplDelete,tplSlot,missChoose,missClose,setStep,
  fSearch,logFood,delFood,newFood,logResult,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
 })();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
