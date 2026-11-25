@@ -401,7 +401,13 @@ const SEED_USUALS=[
  ['s29',"Fried chicken breast",360,35],['s30',"Chopped brisket sandwich",500,30],
  ['s31',"Turkey & cheese sub, cooler case",350,22],['s32',"Egg salad sandwich, cooler case",400,14],
  ['s33',"Frozen burrito, beef & bean",300,9],['s34',"Hot Pocket",290,10],['s35',"Instant ramen cup",290,6],
- ['s36',"Chocolate milk, 16 oz",340,16],['s37',"Energy drink, 16 oz",210,0],['s38',"Banana",105,1]
+ ['s36',"Chocolate milk, 16 oz",340,16],['s37',"Energy drink, 16 oz",210,0],['s38',"Banana",105,1],
+ ['s39',"Breakfast burrito, egg & sausage",350,14],['s40',"Breakfast pizza slice",330,13],
+ ['s41',"Fried chicken thigh",300,20],['s42',"Chicken wings, 6 pc, hot case",480,36],
+ ['s43',"Fried chicken sandwich, hot case",450,24],['s44',"Cheeseburger, wrapped, hot case",380,19],
+ ['s45',"Potato wedges, regular",300,4],['s46',"Ham & cheese sandwich, cooler case",330,18],
+ ['s47',"Egg bites, 2-pack, cooler case",180,13],['s48',"Almonds, 1 oz",165,6],
+ ['s49',"Sunflower seeds, 1 oz kernels",160,6],['s50',"Coffee, 20 oz, cream & sugar",150,2]
 ].map(([id,n,k,p])=>({id,n,k,p}));
 
 /* ================= state ================= */
@@ -409,7 +415,7 @@ const SEED_USUALS=[
 /* XTRA = exercises added to one day's session only, keyed by date. */
 let P=null,PLAN=null,LOGS={},BODY=[],FUEL={},CUSTOM=[],SESS={},EXS=[],XTRA={},TPL=[],SETTINGS={},META={},XP=null,
     tab='today',restT=null,restLeft=0,sessT=null,editDay=null,pickFor=null,
-    fq='',fres=null,fbusy=false,verdict=null,vbusy=false;
+    fq='',verdict=null,vbusy=false;
 /* Dates are the phone's local calendar day (v2 used UTC, which flipped to
    "tomorrow" around 7pm Central, mid-way through evening sessions). */
 const keyOf=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
@@ -1443,7 +1449,8 @@ const newId=p=>p+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
 function normUsuals(){
   let ch=false;
   CUSTOM.forEach(u=>{if(!u.id){u.id=newId('u');ch=true;}});
-  SEED_USUALS.forEach(s=>{if(!CUSTOM.some(u=>u.id===s.id)){CUSTOM.push(Object.assign({builtin:true},s));ch=true;}});
+  /* Skip a built-in when the user already saved a food by that name. */
+  SEED_USUALS.forEach(s=>{if(!CUSTOM.some(u=>u.id===s.id||u.n.toLowerCase()===s.n.toLowerCase())){CUSTOM.push(Object.assign({builtin:true},s));ch=true;}});
   return ch;
 }
 const findUsual=n=>CUSTOM.find(u=>u.n.toLowerCase()===String(n).trim().toLowerCase());
@@ -1570,18 +1577,8 @@ function vFuel(){
     <input id="f_q" value="${esc(fq)}" placeholder="mcdonalds hamburger" oninput="IR.fSearch(this.value)">
     ${hits.length?hits.map(x=>`<div class="usual"><div>${h(x.n)}<br><small>${x.k} kcal · ${x.p}g protein</small></div>
       <button class="add" onclick="IR.logFood('${esc(x.n)}',${x.k},${x.p})" aria-label="Log ${h(x.n)}">+</button></div>`).join('')
-      :fq?`<p class="muted" style="margin-top:10px">Not in the built-in list. Look it up:</p>`:''}
-    ${fq&&!hits.length?`<button class="btn blue" style="margin-top:8px" onclick="IR.aiLookup()">${fbusy?'<span class="spin"></span> Looking it up':'Look up "'+esc(fq)+'"'}</button>`:''}
-    ${fres?`<div style="border:1.5px solid var(--p-blue);background:#fff;padding:11px;margin-top:10px">
-      <div style="font-weight:700">${fres.n}</div>
-      <div class="row2" style="margin-top:8px">
-        <div><label>Calories</label><input id="r_k" type="number" value="${fres.k}"></div>
-        <div><label>Protein (g)</label><input id="r_p" type="number" value="${fres.p}"></div></div>
-      <p class="muted" style="font-size:12px;margin:8px 0">${fres.note||'Adjust if your portion was bigger or smaller.'}</p>
-      <div class="row2">
-        <button class="btn" onclick="IR.logResult(true)">Log &amp; save</button>
-        <button class="btn ghost" onclick="IR.logResult(false)">Log once</button></div>
-    </div>`:''}
+      :fq?`<p class="muted" style="margin-top:10px">Not on the list yet. Enter it once and save it — it'll be in My usuals next time.</p>
+      <button class="btn" style="margin-top:8px" onclick="IR.fManual()">Enter "${h(fq)}" myself</button>`:''}
   </div>
 
   <div class="card">
@@ -1614,16 +1611,23 @@ function vFuel(){
         <button class="add" onclick="IR.delFood(${i})" aria-label="Remove">−</button></div></div>`;}).join('')}</div>`:''}`;
 }
 function fSearch(v){
-  fq=v;fres=null;
+  fq=v;
   const box=document.getElementById('f_q');const pos=box.selectionStart;
   render();
   const nb=document.getElementById('f_q');if(nb){nb.focus();nb.setSelectionRange(pos,pos);}
 }
 async function logFood(n,k,p){
-  const u=findUsual(n);if(u)return logUsual(u.id).then(()=>{fq='';fres=null;render();});
+  const u=findUsual(n);if(u)return logUsual(u.id).then(()=>{fq='';render();});
   const key=todayKey();FUEL[key]=FUEL[key]||{items:[]};
   FUEL[key].items.push({n,k:+k,p:+p});await set('ir:fuel',FUEL);
-  fq='';fres=null;render();
+  fq='';render();
+}
+/* A search miss goes to manual entry with the name filled in. Food lookup by
+   AI waits for the Phase 5 proxy. */
+function fManual(){
+  const n=fq;fq='';render();
+  const nm=document.getElementById('c_n'),kc=document.getElementById('c_k');
+  nm.value=n;nm.scrollIntoView({block:'center'});kc.focus();
 }
 async function delFood(i){const k=todayKey();FUEL[k].items.splice(i,1);await set('ir:fuel',FUEL);render();}
 async function newFood(save){
@@ -1679,16 +1683,7 @@ function shrink(file){
   });
 }
 function photoClear(keep){if(photo&&photo.prev)URL.revokeObjectURL(photo.prev);photo=null;keep?renderKeep():render();}
-async function logResult(save){
-  const k=+document.getElementById('r_k').value,p=+document.getElementById('r_p').value;
-  const item={n:fres.n,k,p};
-  const key=todayKey();FUEL[key]=FUEL[key]||{items:[]};FUEL[key].items.push(item);
-  await set('ir:fuel',FUEL);
-  if(save)await addUsual(item);
-  fq='';fres=null;render();
-}
-
-/* ---- AI lookup ---- */
+/* ---- AI (the "Straight answer" card). Food lookup waits for the Phase 5 proxy. ---- */
 async function callClaude(content,useSearch){
   const body={model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content}]};
   if(useSearch)body.tools=[{type:"web_search_20250305",name:"web_search"}];
@@ -1696,23 +1691,6 @@ async function callClaude(content,useSearch){
     {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
   const d=await r.json();
   return d.content.filter(x=>x.type==="text").map(x=>x.text).join("\n");
-}
-function parseJSON(t){
-  const c=t.replace(/```json|```/g,'').trim();
-  const s=c.indexOf('{'),e=c.lastIndexOf('}');
-  return JSON.parse(c.slice(s,e+1));
-}
-async function aiLookup(){
-  if(fbusy)return;fbusy=true;render();
-  try{
-    const t=await callClaude(
-      `Nutrition facts for one standard serving of: "${fq}". Respond with ONLY a JSON object, no prose, no markdown:
-{"n":"clean food name with portion","k":calories_as_number,"p":protein_grams_as_number,"note":"what portion this assumes, one short sentence"}`,true);
-    fres=parseJSON(t);
-  }catch(e){
-    fres={n:fq,k:0,p:0,note:"Lookup failed — enter the numbers yourself below."};
-  }
-  fbusy=false;render();
 }
 async function readDay(){
   if(vbusy)return;vbusy=true;verdict=null;render();
@@ -1821,7 +1799,7 @@ return{go,saveIntake,importFile,importText,xpShare,xpDownload,xpCopy,xpText,xpCl
  editDayGo,setDay,moveDay,setEx,moveEx,delEx,groupEx,pickGo,addEx,backToEdit,switchPreset,
  xSearch,newExGo,saveNewEx,rmExtra,tpToggle,setTempo,setTempoPlan,setWarm,warmMark,presetConfirm,presetCancel,cancelPending,
  tplNew,tplOpen,tplDup,tplSet,tplDelete,tplSlot,missChoose,missClose,setStep,
- fSearch,logFood,delFood,newFood,logResult,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,aiLookup,photoPick,photoClear,readDay,saveBody,exportAll};
+ fSearch,fManual,logFood,delFood,newFood,uSearch,uMore,uDown,uUp,uHold,uTap,uSave,uCancel,uDelete,saveLogged,photoPick,photoClear,readDay,saveBody,exportAll};
 })();
 if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 </script>
